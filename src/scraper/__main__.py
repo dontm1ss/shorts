@@ -1,4 +1,4 @@
-"""CLI парсера: скачать новые посты в data/forum-posts/.
+"""CLI парсера: скачать новые посты в data/forum-posts/ (Reddit + Pikabu без ключа).
 
     venv\\Scripts\\python -m scraper [--sub tifu --sub pettyrevenge]
 """

@@ -16,38 +16,16 @@ import logging
 import re
 import time
 import xml.etree.ElementTree as ET
-from html.parser import HTMLParser
 
 import requests
 
+from scraper.common import html_to_text, reject_reason
 from scraper.store import load_processed, save_post
 
 log = logging.getLogger(__name__)
 
 _ATOM = {"a": "http://www.w3.org/2005/Atom"}
 _BODY = re.compile(r"<!-- SC_OFF -->(.*?)<!-- SC_ON -->", re.S)
-_BLOCK_TAGS = {"p", "br", "li", "blockquote", "h1", "h2", "h3", "h4", "pre", "tr", "hr"}
-
-
-class _TextExtractor(HTMLParser):
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.parts: list[str] = []
-
-    def handle_starttag(self, tag, attrs):
-        if tag in _BLOCK_TAGS:
-            self.parts.append("\n\n" if tag != "li" else "\n- ")
-
-    def handle_data(self, data):
-        self.parts.append(data)
-
-
-def html_to_text(fragment: str) -> str:
-    parser = _TextExtractor()
-    parser.feed(fragment)
-    text = "".join(parser.parts)
-    text = re.sub(r"[ \t]+", " ", text)
-    return re.sub(r"\n\s*\n\s*", "\n\n", text).strip()
 
 
 def parse_feed(xml_bytes: bytes, subreddit: str) -> list[dict]:
@@ -94,21 +72,6 @@ def parse_listing(data: dict, subreddit: str) -> list[dict]:
             "published": p.get("created_utc"),
         })
     return posts
-
-
-def reject_reason(post: dict, sc: dict) -> str | None:
-    text = post["text"].strip()
-    if not post.get("is_self", True):
-        return "не текстовый"
-    if post.get("stickied"):
-        return "закреплён"
-    if text in ("", "[removed]", "[deleted]"):
-        return "нет текста"
-    if not sc["min_chars"] <= len(text) <= sc["max_chars"]:
-        return "длина"
-    if sc["exclude_nsfw"] and post["over_18"]:
-        return "nsfw"
-    return None
 
 
 def oauth_token(sc: dict, session: requests.Session) -> str:
