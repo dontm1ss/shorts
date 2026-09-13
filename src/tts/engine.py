@@ -126,10 +126,25 @@ class TTSEngine:
             self._voices[key] = model.conds
         model.conds = self._voices[key]
 
+    @staticmethod
+    def token_cap(text: str) -> int:
+        """Предел речевых токенов (25 в секунду) по длине текста. У Chatterbox он зашит — 1000
+        (40 с): сорвавшаяся в «бормотание» генерация тратит минуты CPU. Предел ≈ вдвое больше
+        нормальной речи (~15 букв/с), дальше проверка всё равно отбракует кусок."""
+        letters = len(_LETTER.findall(text))
+        return int(min(1000, max(100, 25 * (letters / 8 + 2.5))))
+
     def _raw_generate(self, text: str, params: dict, voice: Path | None) -> np.ndarray:
         """Один вызов модели → моно float32 без обработки."""
         self._use_voice(voice, params["exaggeration"])
-        wav = self.model.generate(text, language_id=self.tts_cfg["language_id"], **params)
+        t3 = self.model.t3
+        original, cap = t3.inference, self.token_cap(text)
+        # generate() не пробрасывает max_new_tokens — подменяем на время вызова
+        t3.inference = lambda *a, **kw: original(*a, **{**kw, "max_new_tokens": cap})
+        try:
+            wav = self.model.generate(text, language_id=self.tts_cfg["language_id"], **params)
+        finally:
+            del t3.inference
         return wav.squeeze(0).cpu().numpy().astype(np.float32)
 
     def _trim(self, wav: np.ndarray) -> np.ndarray:

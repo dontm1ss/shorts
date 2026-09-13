@@ -11,7 +11,7 @@ _NUMBER = re.compile(r"(?<![\w.])(\d+(?:[.,]\d+)?)(?![\w])")
 _PERCENT = re.compile(r"(\d+(?:[.,]\d+)?)\s*%")
 _TIME = re.compile(r"\b(\d{1,2}):(\d{2})\b")
 # Всё, что не буквы, цифры, пробелы и обычная пунктуация: эмодзи, пиктограммы, стрелки и т.п.
-_UNSPEAKABLE = re.compile(r"[^\w\s.,!?;:«»\"'()\-—–…́]")
+_UNSPEAKABLE = re.compile(r"[^\w\s.,!?;:«»\"'()\-—–…\u0301]")
 
 
 def _words(number: str, lang: str) -> str:

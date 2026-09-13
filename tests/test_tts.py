@@ -216,3 +216,29 @@ def test_unknown_preset(dev_cfg, tmp_path):
 def test_normalize_for_tts(raw, spoken):
     from tts.text import normalize_for_tts
     assert normalize_for_tts(raw) == spoken
+
+
+def test_token_cap_passed_to_model_and_restored(dev_cfg):
+    """generate() Chatterbox зашивает max_new_tokens=1000 — движок подменяет его по длине текста."""
+    import torch
+
+    class T3:
+        def inference(self, **kw):
+            self.seen = kw["max_new_tokens"]
+
+    class Model:
+        sr = SR
+        t3 = T3()
+
+        def generate(self, text, language_id, **params):
+            self.t3.inference(max_new_tokens=1000)
+            return torch.zeros(1, SR)
+
+    engine = TTSEngine(dev_cfg)
+    engine._model = Model()
+    engine._voices[None] = None
+    text = "Никто в деревне не знал, кто живёт в замке."
+    engine._raw_generate(text, {"exaggeration": 0.5}, None)
+    assert engine._model.t3.seen == TTSEngine.token_cap(text) < 1000
+    assert "inference" not in vars(engine._model.t3)          # подмена снята
+    assert TTSEngine.token_cap("а" * 5000) == 1000 and TTSEngine.token_cap("Да.") == 100
