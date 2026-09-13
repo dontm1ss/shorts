@@ -49,7 +49,7 @@ def script_story(payload: dict, cfg: dict) -> dict:
     log.info("История «%s» → %s", scene["meta"]["title"], rel_path(path))
     p = {"scene": rel_path(path)}
     return {"scene": rel_path(path), "next": [[
-        {"kind": "tts_synthesis", "payload": {**p, "fit": True}},
+        {"kind": "tts_synthesis", "payload": p},
         {"kind": "subtitle_generation", "payload": p},
         {"kind": "video_render", "payload": p},
     ]]}
@@ -64,7 +64,7 @@ def script_drama(payload: dict, cfg: dict) -> dict:
     save_scene(scene, path)
     log.info("Переписка «%s» (%d сообщений) → %s", scene["meta"]["title"], len(scene["script"]), rel_path(path))
     p = {"scene": rel_path(path)}
-    chain = [{"kind": "tts_synthesis", "payload": {**p, "fit": True}}]
+    chain = [{"kind": "tts_synthesis", "payload": p}]
     if "imessage_drama" in cfg["compositor"]["subtitles_for"]:
         chain.append({"kind": "subtitle_generation", "payload": p})
     chain += [{"kind": "ui_render", "payload": p}, {"kind": "video_render", "payload": p}]
@@ -74,8 +74,11 @@ def script_drama(payload: dict, cfg: dict) -> dict:
 # --- тяжёлые этапы --------------------------------------------------------------
 
 def tts_synthesis(payload: dict, cfg: dict) -> dict:
-    """Озвучка; с fit=True — подгонка под 50–60 с: небольшой промах (≤7%) — докрутка темпа,
-    большой — DeepSeek переписывает текст и озвучка повторяется."""
+    """Озвучка. По умолчанию — один проход, без подгонки под 50–60 с: рендер сам обрезает
+    видео по концу озвучки (scene_duration_s), так что точный тайминг не нужен, а докрутка
+    темпа и повторные вызовы DeepSeek только тратят время на медленном TTS. С fit=True в
+    payload — старое поведение: небольшой промах (≤7%) докручивается темпом, большой —
+    DeepSeek переписывает текст и озвучка повторяется (до story.max_fit_rounds раз)."""
     from tts import TTSEngine, synthesize_scene
     from tts.scene import stretch_scene_audio
     path = _scene_file(payload)
