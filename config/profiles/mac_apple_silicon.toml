@@ -27,7 +27,9 @@ compute_type = "int8"
 
 [render]
 encoder = "h264_videotoolbox"
-encoder_args = ["-q:v", "65"]
+# Битрейт, а не -q:v: режим постоянного качества есть только у нативной arm64-сборки ffmpeg,
+# x86_64-ffmpeg из /usr/local (Rosetta) его отвергает
+encoder_args = ["-b:v", "8M", "-maxrate", "12M"]
 hwaccel = "videotoolbox"
 
 [imessage]

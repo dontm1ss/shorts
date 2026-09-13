@@ -110,7 +110,9 @@ def build_plan(scene: dict, cfg: dict, encoder: str, encoder_args: list[str],
         graph.append(f"[base]subtitles={subs.name}[vout]")
     else:
         graph.append("[base]null[vout]")
-    graph.append(f"[{audio_src}]loudnorm={comp['loudnorm']},aresample=48000,apad[aout]")
+    # aformat явно: ffmpeg 6.0 не согласует раскладку каналов между aresample и apad для моно-озвучки
+    graph.append(f"[{audio_src}]loudnorm={comp['loudnorm']},aresample=48000,"
+                 "aformat=sample_rates=48000:channel_layouts=stereo,apad[aout]")
 
     args = [*inputs, "-filter_complex", ";".join(graph), "-map", "[vout]", "-map", "[aout]",
             "-c:v", encoder, *encoder_args, "-pix_fmt", "yuv420p", "-r", str(fps),
