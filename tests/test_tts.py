@@ -17,13 +17,18 @@ LETTERS_PER_S = 15
 
 
 class FakeEngine(TTSEngine):
-    """Речь — тон длиной «15 букв в секунду» с полусекундной тишиной по краям."""
+    """Речь — тон длиной «15 букв в секунду» с полусекундной тишиной по краям.
+    «Whisper» распознаёт слова текста, равномерно разложенные по речи."""
 
-    def __init__(self, cfg, babble_attempts=0):
+    def __init__(self, cfg, babble_attempts=0, junk_tail_s=0.0, garble_attempts=0):
         super().__init__(cfg)
         self.calls: list[tuple[str, Path | None]] = []
         self.seeds: list[int] = []
         self.babble_attempts = babble_attempts   # столько первых вызовов «бормочут» (×10 длиннее)
+        self.garble_attempts = garble_attempts   # столько первых вызовов распознаются как мусор
+        self.junk_tail_s = junk_tail_s           # громкий шум после речи — как у Chatterbox
+        self._speech_s = 0.0
+        self._text = ""
 
     @property
     def sr(self):
@@ -37,12 +42,23 @@ class FakeEngine(TTSEngine):
 
     def _raw_generate(self, text, params, voice):
         self.calls.append((text, voice))
+        self._text = text
         speech_s = sum(c.isalpha() for c in text) / LETTERS_PER_S
         if len(self.calls) <= self.babble_attempts:
             speech_s *= 10
+        self._speech_s = speech_s
         tone = 0.5 * np.sin(np.arange(int(speech_s * SR)) * 0.3)
+        junk = 0.4 * np.sin(np.arange(int(self.junk_tail_s * SR)) * 0.7)
         silence = np.zeros(SR // 2)
-        return np.concatenate([silence, tone, silence]).astype(np.float32)
+        return np.concatenate([silence, tone, np.zeros(SR // 4), junk, silence]).astype(np.float32)
+
+    def _recognize(self, wav):
+        start = 0.03                        # после librosa-обрезки речь начинается через ~30 мс поля
+        if len(self.calls) <= self.garble_attempts:
+            return [Word("бла", start, start + self._speech_s)]
+        words = self._text.split()
+        step = self._speech_s / len(words)
+        return [Word(w, start + i * step, start + (i + 1) * step) for i, w in enumerate(words)]
 
 
 def mock_scene(name):

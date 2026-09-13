@@ -5,14 +5,17 @@
 (function () {
   "use strict";
 
-  const POP_MS = 180;          // появление пузыря
-  const RECEIPT_DELAY_MS = 350;
-  const DOT_STEP_MS = 110;     // шаг анимации точек «печатает…»
+  const POP_MS = 180;            // появление пузыря
+  const RECEIPT_DELAY_MS = 450;  // «Прочитано» — чуть позже своего сообщения
+  const DOT_STEP_MS = 110;       // шаг анимации точек «печатает…»
+  // Синие пузыри в iOS — градиент по высоте экрана: выше светлее, ниже темнее
+  const BLUE_TOP = [99, 176, 252];
+  const BLUE_BOTTOM = [47, 118, 245];
 
   let D = null;
-  let rows = [];
-  let natural = [];
-  let listEl, viewportEl, receiptEl, typingEl, typedEl, caretEl, placeholderEl, sendEl, micEl, dots;
+  const rows = [];
+  const natural = [];
+  let listEl, viewportEl, receiptEl, typingEl, dots;
 
   const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
   const ease = (p) => 1 - Math.pow(1 - p, 3);
@@ -24,57 +27,49 @@
     return node;
   }
 
-  function initials(name) {
-    const parts = name.trim().split(/\s+/).filter(Boolean);
-    const letters = parts.slice(0, 2).map((p) => p[0]).join("");
-    return (letters || "?").toUpperCase();
+  function blueAt(y) {
+    const k = clamp(y / viewportEl.clientHeight, 0, 1);
+    const c = BLUE_TOP.map((v, i) => Math.round(v + (BLUE_BOTTOM[i] - v) * k));
+    return "rgb(" + c.join(",") + ")";
   }
 
   window.init = function (data) {
     D = data;
     document.getElementById("phone").className = data.theme;
-    document.getElementById("name").textContent = data.contact;
-    document.getElementById("avatar").textContent = initials(data.contact);
-    document.getElementById("clock").textContent = data.clock;
-    const badge = document.getElementById("badge");
-    badge.textContent = data.badge;
-    badge.style.display = data.badge ? "" : "none";
-
     listEl = document.getElementById("list");
     viewportEl = document.getElementById("viewport");
-    typedEl = document.getElementById("typed");
-    caretEl = document.getElementById("caret");
-    placeholderEl = document.getElementById("placeholder");
-    sendEl = document.getElementById("send");
-    micEl = document.getElementById("mic");
 
     const stamp = el("div", "stamp");
-    stamp.appendChild(el("b", "", "iMessage"));
-    stamp.appendChild(el("br"));
-    stamp.appendChild(document.createTextNode(data.stamp));
+    stamp.appendChild(el("div", "service", "iMessage"));
+    const when = el("div");
+    when.appendChild(el("b", "", data.stamp_day));
+    when.appendChild(document.createTextNode(" " + data.stamp_time));
+    stamp.appendChild(when);
     listEl.appendChild(stamp);
 
     data.messages.forEach((m, i) => {
       const prev = data.messages[i - 1];
       const row = el("div", "row " + m.side);
-      row.style.paddingTop = (!prev ? 2 : prev.side === m.side ? 2 : 9) + "px";
+      row.style.paddingTop = (!prev ? 2 : prev.side === m.side ? 2 : 10) + "px";
       row.appendChild(el("div", "bubble", m.text));
       listEl.appendChild(row);
       rows.push(row);
     });
 
-    receiptEl = el("div", "receipt", data.receipt);
+    receiptEl = el("div", "receipt");
+    receiptEl.appendChild(el("b", "", data.receipt_label));
+    receiptEl.appendChild(document.createTextNode(" " + data.receipt_time));
     listEl.appendChild(receiptEl);
 
     typingEl = el("div", "row left last");
-    typingEl.style.paddingTop = "9px";
+    typingEl.style.paddingTop = "10px";
     const typingBubble = el("div", "bubble typing");
     for (let k = 0; k < 3; k++) typingBubble.appendChild(el("i"));
     typingEl.appendChild(typingBubble);
     listEl.appendChild(typingEl);
     dots = Array.from(typingBubble.children);
 
-    // Естественная высота каждой строки — для плавного «вырастания» при появлении
+    // Естественная высота строк — для плавного «вырастания» пузыря при появлении
     rows.forEach((row) => natural.push(row.offsetHeight));
     return { messages: rows.length };
   };
@@ -116,20 +111,9 @@
     }
     key.push("v" + lastVisible);
 
-    // Следующее сообщение: собеседник «печатает» (точки) или владелец набирает текст в поле
+    // Собеседник «печатает» перед своим сообщением
     const upcoming = ms[lastVisible + 1];
-    let typing = false;
-    let typed = "";
-    if (upcoming && t >= upcoming.typing_start_ms) {
-      if (upcoming.side === "left") {
-        typing = true;
-      } else {
-        const span = Math.max(1, upcoming.appear_ms - upcoming.typing_start_ms);
-        const n = Math.floor(upcoming.text.length * clamp((t - upcoming.typing_start_ms) / span, 0, 1));
-        typed = upcoming.text.slice(0, n);
-      }
-    }
-
+    const typing = !!upcoming && upcoming.side === "left" && t >= upcoming.typing_start_ms;
     typingEl.style.display = typing ? "" : "none";
     if (typing) {
       const phase = Math.floor(t / DOT_STEP_MS) % 9;
@@ -140,8 +124,9 @@
       key.push("t" + phase);
     }
 
+    // «Прочитано» — под последним своим сообщением, если оно последнее в переписке
     const last = ms[lastVisible];
-    const receipt = !!last && last.side === "right" && t - last.appear_ms > RECEIPT_DELAY_MS && !typed && !typing;
+    const receipt = !!last && last.side === "right" && t - last.appear_ms > RECEIPT_DELAY_MS;
     if (receipt) {
       rows[lastVisible].after(receiptEl);
       receiptEl.style.display = "";
@@ -150,18 +135,21 @@
     }
     key.push(receipt ? "r" : "-");
 
-    typedEl.textContent = typed;
-    const hasText = typed.length > 0;
-    placeholderEl.style.display = hasText ? "none" : "";
-    caretEl.style.display = hasText ? "" : "none";
-    sendEl.style.display = hasText ? "" : "none";
-    micEl.style.display = hasText ? "none" : "";
-    key.push("i" + typed.length);
-
     // Прокрутка: новые сообщения снизу, старые уходят вверх
     const offset = Math.max(0, listEl.offsetHeight - viewportEl.clientHeight);
     listEl.style.transform = "translateY(" + (-offset).toFixed(2) + "px)";
     key.push("o" + offset.toFixed(1));
+
+    // Градиент синих пузырей по их положению на экране
+    const top0 = viewportEl.getBoundingClientRect().top;
+    for (let i = 0; i <= lastVisible; i++) {
+      if (ms[i].side !== "right") continue;
+      const bubble = rows[i].firstChild;
+      const r = bubble.getBoundingClientRect();
+      const bottomColor = blueAt(r.bottom - top0);
+      bubble.style.background = "linear-gradient(" + blueAt(r.top - top0) + ", " + bottomColor + ")";
+      bubble.style.setProperty("--tail", bottomColor);
+    }
 
     return key.join("|");
   };
