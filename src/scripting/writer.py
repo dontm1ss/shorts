@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timezone
 
 from core.scene import rel_path, validate_scene, video_path
-from scripting import prompts
+from scripting import params, prompts
 from scripting.client import DeepSeekClient
 
 _WORD = re.compile(r"[^\W\d_]+(?:-[^\W\d_]+)*|\d+")
@@ -95,17 +95,29 @@ def _check_drama(data: dict) -> dict:
 # --- генерация ------------------------------------------------------------------
 
 def adapt_story(post: dict, client: DeepSeekClient, cfg: dict) -> dict:
-    """Пост форума {title, text} → {title, text} на русском под 50–60 с."""
-    system = prompts.STORY_SYSTEM.format(**_limits(cfg))
+    """Пост форума {title, text} → {title, text} на русском под 50–60 с.
+
+    Завязка/тон/развязка каждый раз задаются случайными параметрами (scripting.params),
+    чтобы истории не выходили однотипными — DeepSeek просто пересказывает суть поста,
+    а не изобретает структуру сам."""
+    story_params = params.story_params(cfg)
+    system = prompts.STORY_SYSTEM.format(**_limits(cfg), variety=params.format_story_variety(story_params))
     user = prompts.STORY_USER.format(title=post.get("title", ""), text=post["text"][:12000])
-    return _check_story(client.chat_json(system, user))
+    story = _check_story(client.chat_json(system, user))
+    params.record_story(cfg, story["text"], story_params)
+    return story
 
 
 def generate_drama(client: DeepSeekClient, cfg: dict, topic: str | None = None) -> dict:
+    drama_params = params.drama_params(cfg)
     limits = _limits(cfg, _EST_DRAMA_MESSAGES)
-    system = prompts.DRAMA_SYSTEM.format(**limits, min_messages=DRAMA_MESSAGES[0], max_messages=DRAMA_MESSAGES[1])
+    system = prompts.DRAMA_SYSTEM.format(**limits, min_messages=DRAMA_MESSAGES[0], max_messages=DRAMA_MESSAGES[1],
+                                         variety=params.format_drama_variety(drama_params))
     user = prompts.DRAMA_USER_TOPIC.format(topic=topic) if topic else prompts.DRAMA_USER_FREE
-    return _check_drama(client.chat_json(system, user))
+    drama = _check_drama(client.chat_json(system, user))
+    if drama["messages"]:
+        params.record_drama(cfg, drama["messages"][0]["text"], drama_params)
+    return drama
 
 
 def _direction(current_s: float, target_s: float) -> str:

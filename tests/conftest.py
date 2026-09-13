@@ -23,8 +23,12 @@ def isolated_env(monkeypatch, tmp_path):
 
 
 @pytest.fixture
-def dev_cfg():
-    """Конфиг dev-профиля без обращения к реальному железу."""
-    return core.config.load_config(
+def dev_cfg(tmp_path):
+    """Конфиг dev-профиля без обращения к реальному железу. scripting_history — во
+    временной папке, чтобы тесты (adapt_story/generate_drama) не писали в реальный
+    data/scripting-history.json репозитория."""
+    cfg = core.config.load_config(
         hw=make_hw("Windows", gpus=["AMD Radeon RX 6600"], vendors=["amd"])
     )
+    cfg["paths"]["scripting_history"] = str(tmp_path / "scripting-history.json")
+    return cfg
