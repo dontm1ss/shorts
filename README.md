@@ -1,39 +1,99 @@
 # shorts — контент-ферма коротких видео
 
-Конвейер «от сырых данных до готового mp4» для трёх форматов вертикальных видео (1080×1920):
+Конвейер «от сырых данных до готового mp4» для трёх форматов вертикальных видео (9:16, 1080×1920):
 
-- **iMessage-драма** — сценарий переписки (DeepSeek) → озвучка по ролям → запись анимированного
-  интерфейса iMessage → паркур-фон.
-- **Истории с форумов** — пост → адаптация под 50–60 с (DeepSeek) → озвучка → крупные субтитры
-  с пословной подсветкой → паркур-фон.
-- **Нарезка клипов** — собственные видео режутся окном 30 с с шагом 2 с → озвучка + субтитры →
+- **Истории с форумов** — пост Reddit → адаптация на русский под 50–60 с (DeepSeek) → озвучка
+  Chatterbox → крупные субтитры с пословной подсветкой → паркур на весь кадр.
+- **iMessage-драма** — переписка по ролям (DeepSeek) → озвучка → покадровая запись копии
+  интерфейса iMessage → интерфейс сверху, паркур снизу.
+- **Нарезка клипов** — собственные видео режутся окном 30 с с шагом 2 с → субтитры по звуку →
   клип сверху, паркур снизу.
 
-Полное ТЗ: [docs/PROJECT_SPEC.md](docs/PROJECT_SPEC.md). План работ: [TODO.md](TODO.md).
+Полное ТЗ: [docs/PROJECT_SPEC.md](docs/PROJECT_SPEC.md), стек TTS: [docs/tts-stack-spec.md](docs/tts-stack-spec.md).
+План и статусы: [TODO.md](TODO.md).
+
+## Быстрый старт
+
+```bash
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
+```
+
+Затем `DEEPSEEK_API_KEY` в `.env` (шаблон — `.env.example`) и `parkur.mp4` в корень репозитория.
+
+```bash
+venv\Scripts\python -m pipeline story --mock
+```
+
+Готовые ролики — в `output/videos/`.
+
+## Конвейер
+
+Всё идёт через очередь задач на SQLite (`output/queue.sqlite`): тяжёлые этапы строго по одному,
+каждый — отдельным процессом. Команды ставят задачи в очередь и сразу запускают воркер
+(`--no-run` — только поставить).
+
+```bash
+venv\Scripts\python -m pipeline story --mock                     # история из mock-data
+venv\Scripts\python -m pipeline story --post data\forum-posts\reddit_xxx.json
+venv\Scripts\python -m pipeline story --scrape 3                 # спарсить Reddit и взять 3 лучших поста
+venv\Scripts\python -m pipeline drama --topic "подруга слила переписку" --count 2
+venv\Scripts\python -m pipeline clips data\source-videos\film.mp4 --limit 5
+venv\Scripts\python -m pipeline worker [--watch]                 # выполнить очередь
+venv\Scripts\python -m pipeline status                           # состояние задач
+venv\Scripts\python -m pipeline retry 12                         # повторить упавшую задачу
+```
+
+| Задача | Что делает |
+|---|---|
+| `script_story` | DeepSeek адаптирует пост, оценка длины до синтеза |
+| `script_drama` | DeepSeek пишет переписку A/B |
+| `tts_synthesis` | озвучка; подгонка под 50–60 с: докрутка темпа ≤7% или переписывание текста |
+| `subtitle_generation` | faster-whisper + выравнивание по сценарию → ASS/SRT |
+| `ui_render` | покадровая запись интерфейса iMessage (Playwright + системный Edge/Chrome) |
+| `video_render` | случайный отрезок паркура + раскладка + субтитры → ffmpeg (энкодер профиля) |
+| `video_clip_extraction` | нарезка окном 30/2 с, сцены и цепочки задач на каждый сегмент |
+
+Логи задач — `output/logs/`, состояние каждой сцены — `output/scenes/<scene_id>.json`,
+промежуточные файлы — `output/work/<scene_id>/`.
+
+## Модули по отдельности
+
+Каждый модуль запускается сам по себе на сцене из `output/scenes/` или `mock-data/`:
+
+```bash
+venv\Scripts\python -m tts scene mock-data\scene.reddit_story.json    # озвучка сцены
+venv\Scripts\python -m tts presets "Текст"                           # сравнить пресеты на слух
+venv\Scripts\python -m subtitles output\scenes\<id>.json              # субтитры
+venv\Scripts\python -m imessage --preview output\scenes\<id>.json     # кадр интерфейса iMessage
+venv\Scripts\python -m imessage output\scenes\<id>.json               # видео интерфейса
+venv\Scripts\python -m video_clipper data\source-videos               # нарезка папки
+venv\Scripts\python -m scraper --sub tifu                             # новые посты в data\forum-posts
+```
 
 ## Структура
 
 ```
 config/
-  base.toml      общие настройки (9:16 1080×1920, окно нарезки, 50–60 с, пресеты TTS)
-  profiles/      профили железа — выбираются автоматически
-docs/            ТЗ и спецификации (PROJECT_SPEC.md, tts-stack-spec.md)
-schema/          scene.schema.json — контракт сцены между модулями + валидатор
+  base.toml          общие настройки: формат, хронометраж, пресеты TTS, стиль субтитров, раскладки
+  profiles/          профили железа — выбираются автоматически
+docs/                ТЗ и спецификации
+schema/              scene.schema.json — контракт сцены между модулями + валидатор
+scripts/             установка окружения, чек-лист, смок-тест TTS
 src/
-  core/          конфигурация и определение железа
-  tts/           Chatterbox + stressonnx, пресеты подачи
-  subtitles/     faster-whisper → SRT/ASS
-  scripting/     DeepSeek: сценарии и рерайт историй
-  scraper/       парсер форумов + дедупликация
-  imessage-ui/   HTML/CSS/JS-интерфейс + запись через Playwright
-  video_clipper/ нарезка скользящим окном
-  compositor/    раскладка слоёв, субтитры
-  renderer/      ffmpeg (NVENC / AMF / x264)
-  pipeline/      оркестратор и очередь задач
-data/            исходные видео (не в git), processed-forum-ids.json
-mock-data/       моковые сцены для изолированной проверки модулей
-output/          готовые ролики (не в git)
-parkur.mp4       паркур-фон (не в git)
+  core/              конфиг и определение железа, сцена, ffmpeg/ffprobe
+  tts/               Chatterbox + stressonnx, проверка кусков whisper'ом, синтез сцены по ролям
+  subtitles/         faster-whisper, выравнивание по сценарию, ASS с подсветкой слов
+  scripting/         DeepSeek: истории, переписки, подгонка длины
+  scraper/           Reddit RSS, дедупликация
+  imessage/          web/ — копия интерфейса iMessage; запись кадров через Playwright
+  video_clipper/     нарезка скользящим окном
+  compositor/        паркур-фон, раскладки кадра (сборка команды ffmpeg)
+  renderer/          финальный рендер (энкодер профиля, запасной libx264)
+  pipeline/          очередь SQLite, задачи, воркер, CLI
+data/                исходные видео (не в git), посты форумов (не в git)
+mock-data/           моковые сцены и пост для проверки модулей без полного прогона
+tests/               pytest
+output/              всё сгенерированное (не в git)
 ```
 
 ## Профили железа
@@ -46,25 +106,34 @@ parkur.mp4       паркур-фон (не в git)
 | `win11_amd` | Win 11, RX 6600, Ryzen 5 5600X | cpu | cpu / int8 | h264_amf |
 | `mac_apple_silicon` | macOS, M-серия | mps | cpu / int8 | h264_videotoolbox |
 
-Профиль выбирается автоматически по ОС и GPU. Проверить, что выбрано на текущей машине
-(заодно реально проверяется, работает ли энкодер):
-
 ```bash
-py -3.11 src/core/config.py
+venv\Scripts\python src\core\config.py        # какой профиль выбран + реальная проверка энкодера
+venv\Scripts\python scripts\check_env.py      # чек-лист окружения
 ```
 
-Задать вручную — `SHORTS_PROFILE=<имя>` в `.env` или в окружении. В коде:
-`from core.config import load_config; cfg = load_config()`.
+Задать профиль вручную — `SHORTS_PROFILE=<имя>` в `.env`.
 
-## Настройка
+## Установка
 
-1. Скопировать `.env.example` в `.env` и вписать `DEEPSEEK_API_KEY`.
-2. Положить `parkur.mp4` в корень репозитория.
-3. Проверить профиль: `py -3.11 src/core/config.py`.
+Нужны Python 3.11 и ffmpeg в PATH. Скрипт создаёт `venv`, ставит torch 2.6.0 с индекса профиля
+(cu124 / cpu / PyPI), зависимости из `requirements.txt`, пакет проекта и прогоняет чек-лист.
 
-## Проверки
+Windows:
+```bash
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
+```
+
+macOS:
+```bash
+bash scripts/setup.sh
+```
+
+Первый синтез скачивает веса с HuggingFace: Chatterbox ~3 ГБ, whisper small ~0.5 ГБ, stressonnx ~0.5 ГБ.
+
+## Тесты
 
 ```bash
-py -3.11 schema/validate_scene.py mock-data/*.json
-py -3.11 -m pytest tests
+venv\Scripts\python -m pytest
 ```
+
+Тесты на настоящей модели TTS (минуты на CPU) — `SHORTS_MODEL_TESTS=1`.

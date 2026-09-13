@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=64,<81"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shorts"
+version = "0.1.0"
+description = "Контент-ферма коротких вертикальных видео"
+requires-python = ">=3.11,<3.12"
+# Зависимости — в requirements.txt: torch ставится отдельно с индекса профиля железа
+# (scripts/setup.ps1, scripts/setup.sh).
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

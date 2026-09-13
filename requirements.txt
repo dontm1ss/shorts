@@ -1,0 +1,13 @@
+# torch==2.6.0 и torchaudio==2.6.0 ставятся ДО этого файла с индекса из профиля
+# (install.torch_index_url) — см. scripts/setup.ps1 / scripts/setup.sh.
+# Проверенные версии — docs/tts-stack-spec.md, раздел 5.
+
+setuptools<81            # иначе ломается watermarker Perth (tts-stack-spec, раздел 7)
+chatterbox-tts==0.1.7
+librosa==0.11.0
+stressonnx==0.0.2
+faster-whisper==1.2.1
+jsonschema==4.26.0
+requests>=2.32
+playwright==1.55.0       # запись интерфейса iMessage (браузер — системный Edge/Chrome)
+pytest==9.1.1

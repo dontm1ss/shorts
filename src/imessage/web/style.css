@@ -1,0 +1,287 @@
+/* Копия интерфейса iMessage (iOS 17). Размер задаёт viewport Playwright: 360 CSS px × масштаб 3. */
+
+#phone.light {
+  --bg: #ffffff;
+  --text: #000000;
+  --bar: rgba(246, 246, 246, 0.96);
+  --bar-line: rgba(0, 0, 0, 0.12);
+  --gray-bubble: #e9e9eb;
+  --blue: #0b84fe;
+  --meta: #8e8e93;
+  --icon: #0b84fe;
+  --field-line: #c6c6c8;
+  --plus: #e5e5ea;
+  --plus-sign: #7b7b80;
+  --status: #000000;
+}
+
+#phone.dark {
+  --bg: #000000;
+  --text: #ffffff;
+  --bar: rgba(22, 22, 24, 0.96);
+  --bar-line: rgba(255, 255, 255, 0.12);
+  --gray-bubble: #262628;
+  --blue: #0b84fe;
+  --meta: #8e8e93;
+  --icon: #0b84fe;
+  --field-line: #3a3a3c;
+  --plus: #2c2c2e;
+  --plus-sign: #9a9a9f;
+  --status: #ffffff;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+}
+
+#phone {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, "SF Pro Text", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* --- статус-бар ------------------------------------------------------------ */
+
+#statusbar {
+  flex: none;
+  height: 34px;
+  padding: 0 22px 0 30px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--bar);
+  color: var(--status);
+  font-weight: 600;
+  font-size: 15px;
+  letter-spacing: -0.2px;
+}
+
+.status-icons { display: flex; gap: 5px; align-items: center; }
+.status-icons svg { fill: var(--status); stroke: var(--status); }
+.status-icons svg path, .status-icons svg rect { stroke: none; }
+.status-icons svg rect[fill="none"] { stroke: var(--status); }
+
+/* --- шапка ------------------------------------------------------------------ */
+
+#header {
+  flex: none;
+  height: 76px;
+  padding: 0 12px;
+  display: grid;
+  grid-template-columns: 70px 1fr 70px;
+  align-items: center;
+  background: var(--bar);
+  border-bottom: 0.5px solid var(--bar-line);
+}
+
+.back { display: flex; align-items: center; gap: 6px; color: var(--icon); }
+.back svg { stroke: var(--icon); }
+
+#badge {
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 11px;
+  background: var(--icon);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 22px;
+  text-align: center;
+}
+
+.contact { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+
+#avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, #a5abb8 0%, #858994 100%);
+  color: #fff;
+  font-size: 18px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  letter-spacing: 0.5px;
+}
+
+.name {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11.5px;
+  color: var(--text);
+}
+.name svg { stroke: var(--meta); }
+
+.facetime { justify-self: end; padding-right: 4px; }
+.facetime svg { stroke: var(--icon); }
+
+/* --- переписка ------------------------------------------------------------ */
+
+#viewport {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+#list {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  padding: 0 0 10px;
+  will-change: transform;
+}
+
+.stamp {
+  padding: 12px 0 6px;
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--meta);
+}
+.stamp b { font-weight: 600; }
+
+.row {
+  display: flex;
+  padding-left: 14px;
+  padding-right: 14px;
+}
+.row.right { justify-content: flex-end; }
+
+.bubble {
+  position: relative;
+  max-width: 74%;
+  padding: 7px 12px 7.5px;
+  border-radius: 18px;
+  font-size: 16.5px;
+  line-height: 1.28;
+  letter-spacing: -0.25px;
+  word-wrap: break-word;
+  white-space: pre-wrap;
+}
+
+.right .bubble { background: var(--blue); color: #fff; transform-origin: 100% 100%; }
+.left .bubble { background: var(--gray-bubble); color: var(--text); transform-origin: 0 100%; }
+
+/* «хвостик» у последнего сообщения в серии */
+.last .bubble::before,
+.last .bubble::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  height: 20px;
+}
+.last.right .bubble::before {
+  right: -7px;
+  width: 20px;
+  background: var(--blue);
+  border-bottom-left-radius: 16px 14px;
+}
+.last.right .bubble::after {
+  right: -26px;
+  width: 26px;
+  background: var(--bg);
+  border-bottom-left-radius: 10px;
+}
+.last.left .bubble::before {
+  left: -7px;
+  width: 20px;
+  background: var(--gray-bubble);
+  border-bottom-right-radius: 16px 14px;
+}
+.last.left .bubble::after {
+  left: -26px;
+  width: 26px;
+  background: var(--bg);
+  border-bottom-right-radius: 10px;
+}
+
+.receipt {
+  padding: 3px 18px 0 0;
+  text-align: right;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--meta);
+}
+
+/* индикатор «печатает…» */
+.bubble.typing {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  height: 36px;
+  padding: 0 14px;
+}
+.bubble.typing i {
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--meta);
+}
+
+/* --- поле ввода ------------------------------------------------------------ */
+
+#inputbar {
+  flex: none;
+  min-height: 52px;
+  padding: 8px 12px 9px 10px;
+  display: flex;
+  align-items: flex-end;
+  gap: 9px;
+  background: var(--bg);
+}
+
+.plus svg circle { fill: var(--plus); }
+.plus svg path { stroke: var(--plus-sign); }
+
+.field {
+  position: relative;
+  flex: 1;
+  min-height: 34px;
+  padding: 6px 40px 6px 13px;
+  border: 1px solid var(--field-line);
+  border-radius: 18px;
+  font-size: 16.5px;
+  line-height: 1.28;
+  letter-spacing: -0.25px;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+#placeholder { color: var(--meta); }
+
+#caret {
+  display: inline-block;
+  width: 2px;
+  height: 19px;
+  margin-bottom: -4px;
+  background: var(--blue);
+}
+
+#mic, #send {
+  position: absolute;
+  right: 3px;
+  bottom: 2.5px;
+}
+#mic { right: 11px; bottom: 7px; }
+#mic svg rect { fill: var(--meta); }
+#mic svg path { stroke: var(--meta); }
+#send svg circle { fill: var(--blue); }

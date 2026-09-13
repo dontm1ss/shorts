@@ -8,6 +8,7 @@ CLI:
     py -3.11 src/core/config.py                  # какой профиль выбран на этой машине
     py -3.11 src/core/config.py --profile NAME   # проверить конкретный профиль
     py -3.11 src/core/config.py --json           # итоговый конфиг целиком
+    py -3.11 src/core/config.py --get tts.device # одно значение (для скриптов)
 """
 from __future__ import annotations
 
@@ -230,13 +231,22 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Показать выбранный профиль конфигурации")
     parser.add_argument("--profile", help="имя профиля вместо автовыбора")
     parser.add_argument("--json", action="store_true", help="вывести итоговый конфиг")
+    parser.add_argument("--get", metavar="KEY", help="вывести одно значение, например install.torch_index_url")
     args = parser.parse_args(argv)
     try:
         cfg = load_config(args.profile)
     except ProfileError as e:
         print(f"Ошибка: {e}", file=sys.stderr)
         return 1
-    if args.json:
+    if args.get:
+        value = cfg
+        for part in args.get.split("."):
+            if not isinstance(value, dict) or part not in value:
+                print(f"Ошибка: нет ключа {args.get!r}", file=sys.stderr)
+                return 1
+            value = value[part]
+        print(json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else value)
+    elif args.json:
         shown = copy.deepcopy(cfg)
         if shown["deepseek"]["api_key"]:
             shown["deepseek"]["api_key"] = "***"

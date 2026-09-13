@@ -30,5 +30,8 @@ encoder = "h264_videotoolbox"
 encoder_args = ["-q:v", "65"]
 hwaccel = "videotoolbox"
 
+[imessage]
+browser_channel = "chrome"   # Edge на Mac обычно нет; без Chrome — `python -m playwright install chromium`
+
 [runtime]
 cpu_threads = 0

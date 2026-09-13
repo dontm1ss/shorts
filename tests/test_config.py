@@ -1,26 +1,10 @@
-import sys
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-import core.config  # noqa: E402
-from core.config import ProfileError, load_config, load_profiles, select_profile  # noqa: E402
-
-
-@pytest.fixture(autouse=True)
-def isolated_env(monkeypatch, tmp_path):
-    """SHORTS_PROFILE из окружения или .env разработчика не должен влиять на тесты."""
-    monkeypatch.delenv("SHORTS_PROFILE", raising=False)
-    monkeypatch.setattr(core.config, "ENV_FILE", tmp_path / ".env")
-
-
-def hw(os_name, arch="x86_64", gpus=(), vendors=()):
-    return {
-        "os": os_name, "os_label": os_name, "arch": arch, "cpu": arch, "cpu_count": 4,
-        "gpus": list(gpus), "gpu_vendors": sorted(vendors),
-    }
+import core.config
+from conftest import make_hw as hw
+from core.config import ProfileError, load_config, load_profiles, select_profile
 
 
 MAC_M2 = hw("Darwin", "arm64", ["Apple Silicon GPU"], ["apple"])
@@ -99,6 +83,21 @@ def test_override_on_foreign_hardware_is_flagged():
     cfg = load_config(profile="win10_nvidia_gtx1060", hw=WIN11_RX6600)
     assert cfg["profile"]["selected_by"] == "override"
     assert cfg["profile"]["matches_hardware"] is False
+
+
+@pytest.mark.parametrize("profile, expected", [
+    ("win10_nvidia_gtx1060", "https://download.pytorch.org/whl/cu124"),
+    ("win11_amd", "https://download.pytorch.org/whl/cpu"),
+    ("mac_apple_silicon", ""),
+])
+def test_cli_get_torch_index(capsys, profile, expected):
+    # setup.ps1 / setup.sh берут индекс torch именно так
+    assert core.config.main(["--profile", profile, "--get", "install.torch_index_url"]) == 0
+    assert capsys.readouterr().out.strip() == expected
+
+
+def test_cli_get_unknown_key(capsys):
+    assert core.config.main(["--profile", "win11_amd", "--get", "nope.key"]) == 1
 
 
 def test_no_secrets_in_config_files():

@@ -26,7 +26,8 @@
           },
           "text": { "type": "string", "minLength": 1 },
           "stressed_text": { "type": "string", "description": "текст с ударениями (U+0301), заполняет TTS-модуль" },
-          "timestamp_ms": { "type": "integer", "minimum": 0 }
+          "timestamp_ms": { "type": "integer", "minimum": 0, "description": "начало реплики в общем аудио" },
+          "duration_ms": { "type": "integer", "minimum": 0, "description": "длительность реплики в общем аудио, заполняет TTS-модуль" }
         }
       }
     },
@@ -82,6 +83,11 @@
         "clip_start_ms": { "type": "integer", "minimum": 0 },
         "clip_end_ms": { "type": "integer", "minimum": 1 }
       }
+    },
+
+    "meta": {
+      "type": "object",
+      "description": "данные конкретного формата: title, contacts (iMessage), source (форум) и т.п."
     },
 
     "output": {

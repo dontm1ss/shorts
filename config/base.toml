@@ -13,10 +13,18 @@ audio_bitrate = "192k"
 [clipper]
 window_s = 30   # длина сегмента
 step_s = 2      # шаг между стартами соседних сегментов
+write_files = true   # сохранять сегменты отдельными mp4 (финальный рендер всё равно берёт кадры из исходника)
+video_extensions = [".mp4", ".mkv", ".mov", ".avi", ".webm"]
 
 [story]
 min_duration_s = 50
 max_duration_s = 60
+target_duration_s = 55
+# Темп озвучки для оценки длины текста до синтеза. Замер Chatterbox (neutral, после обрезки
+# хвостов): ~3.6 слова/с + ~0.3 с на реплику. Точный хронометраж проверяется после TTS.
+words_per_second = 3.6
+line_overhead_s = 0.3
+max_fit_rounds = 3      # сколько раз переписывать текст под хронометраж
 
 [paths]
 parkour = "parkur.mp4"
@@ -28,6 +36,9 @@ processed_forum_ids = "data/processed-forum-ids.json"
 [deepseek]
 base_url = "https://api.deepseek.com"
 model = "deepseek-chat"
+temperature = 1.0
+timeout_s = 120
+max_retries = 3
 # api_key — только из .env (DEEPSEEK_API_KEY)
 
 [tts]
@@ -37,6 +48,30 @@ language_id = "ru"
 max_chars_per_chunk = 300
 # Отдельный процесс для TTS (docs/tts-stack-spec.md, раздел 1)
 isolated_process = true
+pause_between_lines_ms = 350    # пауза между репликами сценария
+pause_between_chunks_ms = 150   # пауза между кусками одной длинной реплики
+trim_top_db = 40                # обрезка тишины по краям каждого куска
+seed = 42                       # фиксированный seed — повторяемость при подборе пресетов
+# Повторная генерация, если кусок не прошёл проверку (tts-stack-spec, раздел 8)
+max_retries = 2
+# Проверка каждого куска whisper'ом: обрезка по последнему распознанному слову (модель
+# после речи дописывает 2–3 с шума/бормотания) + повтор, если текст распознан плохо
+verify = true
+max_text_error = 0.25   # доля несовпадения букв распознанного и заданного текста
+
+# Пресет по умолчанию для каждого формата. По проверке whisper'ом чище всего звучит neutral:
+# energetic и calm искажали слова на тестовой фразе — уточнить после прослушивания.
+[tts.scene_presets]
+reddit_story = "neutral"
+imessage_drama = "neutral"
+video_clip = "neutral"
+
+# Референс-голоса: wav 5–15 с чистой речи, путь от корня репозитория.
+# Пусто — встроенный голос Chatterbox.
+[tts.voices]
+narrator = ""
+A = ""
+B = ""
 
 # Стартовые пресеты подачи (docs/tts-stack-spec.md, раздел 9) — уточняются в задаче 3
 [tts.presets.neutral]
@@ -58,6 +93,48 @@ temperature = 0.7
 engine = "faster-whisper"
 model = "small"
 language = "ru"
+clip_language = "auto"   # язык клипов-исходников: auto = определить по звуку
+# Группы слов на экране (TikTok-стиль: 1–3 слова, текущее подсвечено)
+max_words = 3
+max_chars = 16
+max_gap_s = 0.6          # пауза длиннее — новая группа
+uppercase = true
+
+[subtitles.style]
+font = "Arial Black"
+size = 84
+color = "#FFFFFF"
+highlight_color = "#FFE600"   # текущее слово
+outline_color = "#000000"
+outline = 6
+shadow = 3
+pop_scale = 115               # «прыжок» текущего слова, % от размера
+
+# Вертикальный центр субтитров по раскладкам (кадр 1080×1920)
+[subtitles.position_y]
+full_bg = 1060       # история на паркуре — чуть ниже центра
+top_bottom = 960     # клип сверху / паркур снизу — ровно на стыке
+ui_over_bg = 1590    # iMessage сверху — по центру паркура под интерфейсом
+
+[imessage]
+me_speaker = "B"             # владелец телефона — синие пузыри справа; остальные — серые слева
+theme = "light"              # light | dark
+css_width = 360              # ширина «телефона» в CSS-пикселях: кадр 1080 → масштаб ×3
+typing_ms = 1400             # сколько собеседник «печатает» перед сообщением
+min_gap_ms = 350             # индикатор набора — не раньше, чем через столько после прошлого сообщения
+browser_channel = "msedge"   # системный браузер для Playwright: msedge | chrome | chromium (скачанный)
+
+[compositor]
+clip_fit = "cover"        # cover — заполнить область с обрезкой краёв; contain — вписать на размытом фоне
+ui_height = 1260          # высота интерфейса iMessage сверху (кратна 3), ниже — паркур
+tail_ms = 700             # хвост ролика после конца озвучки
+loudnorm = "I=-14:TP=-1.5:LRA=11"   # громкость под площадки коротких видео
+subtitles_for = ["reddit_story", "video_clip"]   # в iMessage текст уже в пузырях
+
+[compositor.layout]
+reddit_story = "full_bg"       # паркур на весь кадр + субтитры
+video_clip = "top_bottom"      # клип сверху, паркур снизу
+imessage_drama = "ui_over_bg"  # интерфейс переписки сверху, паркур снизу
 
 [render]
 # Запасной CPU-энкодер, если аппаратный недоступен
@@ -68,6 +145,22 @@ fallback_encoder_args = ["-preset", "veryfast", "-crf", "21"]
 # Тяжёлые задачи (TTS, whisper, рендер) строго последовательно — на всех машинах,
 # чтобы тесты на dev-машинах вели себя так же, как на целевом железе.
 max_parallel_jobs = 1
+db = "output/queue.sqlite"
+max_attempts = 2
+
+[scraper]
+# Публичная RSS-лента Reddit (без авторизации; JSON без OAuth закрыт — 403, у RSS жёсткий лимит).
+# Посты на английском — DeepSeek адаптирует их на русский.
+subreddits = ["tifu", "pettyrevenge", "MaliciousCompliance", "ProRevenge", "AmItheAsshole", "entitledparents"]
+sort = "top"            # top | hot | new
+time_filter = "week"    # для top: day | week | month | year | all
+limit = 50              # постов на сабреддит за запрос
+min_chars = 800         # короче — не хватит материала на 50–60 с
+max_chars = 9000
+exclude_nsfw = true     # не лексический фильтр: NSFW-посты — риск страйка на площадках
+request_delay_s = 8
+user_agent = "windows:shorts-content-pipeline:v0.1"
+posts_dir = "data/forum-posts"
 
 [runtime]
 cpu_threads = 0                     # 0 = автоопределение

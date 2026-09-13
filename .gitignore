@@ -8,6 +8,11 @@ venv/
 __pycache__/
 *.pyc
 .pytest_cache/
+*.egg-info/
+
+# Состояние машины: скачанные посты (чужой контент) и список использованных
+data/forum-posts/
+data/processed-forum-ids.json
 
 # Node
 node_modules/

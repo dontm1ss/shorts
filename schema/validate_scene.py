@@ -1,29 +1,13 @@
 """Проверка JSON-сцен по schema/scene.schema.json.
 
 Использование:
-    python schema/validate_scene.py mock-data/*.json
+    venv\\Scripts\\python schema/validate_scene.py mock-data/scene.reddit_story.json ...
 """
 import json
 import sys
 from pathlib import Path
 
-from jsonschema import Draft202012Validator
-
-SCHEMA_PATH = Path(__file__).with_name("scene.schema.json")
-
-
-def load_validator() -> Draft202012Validator:
-    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
-    Draft202012Validator.check_schema(schema)
-    return Draft202012Validator(schema, format_checker=Draft202012Validator.FORMAT_CHECKER)
-
-
-def validate_file(validator: Draft202012Validator, path: Path) -> list[str]:
-    scene = json.loads(path.read_text(encoding="utf-8"))
-    return [
-        f"{'/'.join(map(str, err.absolute_path)) or '<root>'}: {err.message}"
-        for err in sorted(validator.iter_errors(scene), key=lambda e: list(e.absolute_path))
-    ]
+from core.scene import scene_errors
 
 
 def main(argv: list[str]) -> int:
@@ -31,11 +15,10 @@ def main(argv: list[str]) -> int:
     if not argv:
         print(__doc__)
         return 2
-    validator = load_validator()
     failed = 0
     for arg in argv:
         path = Path(arg)
-        errors = validate_file(validator, path)
+        errors = scene_errors(json.loads(path.read_text(encoding="utf-8")))
         if errors:
             failed += 1
             print(f"FAIL {path}")
