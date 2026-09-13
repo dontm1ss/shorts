@@ -8,6 +8,7 @@
     { "speaker": "A", "text": "Скрин из твоего чата уже у всей группы.", "timestamp_ms": 4600 },
     { "speaker": "B", "text": "Это не то, что ты думаешь.", "timestamp_ms": 8100 }
   ],
+  "meta": { "title": "Скрин", "contacts": { "A": "Лена", "B": "Я" }, "genders": { "A": "female", "B": "female" } },
   "background": { "type": "parkour_minecraft", "source_path": "parkur.mp4", "start_ms": 450000 },
   "output": { "resolution": "1080x1920", "path": "output/imessage_drama_8a2e6d40.mp4" }
 }

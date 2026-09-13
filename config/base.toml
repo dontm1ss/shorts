@@ -67,8 +67,11 @@ imessage_drama = "neutral"
 video_clip = "neutral"
 
 # Референс-голоса: wav 5–15 с чистой речи, путь от корня репозитория.
-# Пусто — встроенный голос Chatterbox.
+# Голос реплики: явный голос роли (narrator / A / B) → голос по полу героя (female / male;
+# пол определяет DeepSeek при написании сценария — meta.genders сцены) → встроенный голос Chatterbox.
 [tts.voices]
+female = ""
+male = ""
 narrator = ""
 A = ""
 B = ""

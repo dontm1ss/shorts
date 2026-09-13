@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -11,10 +12,13 @@ from core.config import ROOT
 from core.scene import SceneError, rel_path, validate_scene, work_dir
 from tts.engine import TTSEngine
 
+log = logging.getLogger(__name__)
 
-def resolve_voice(speaker: str, voices: dict) -> Path | None:
-    """Референс-голос роли из tts.voices; None — встроенный голос Chatterbox."""
-    value = voices.get(speaker, "")
+
+def resolve_voice(speaker: str, voices: dict, gender: str | None = None) -> Path | None:
+    """Референс-голос реплики из tts.voices: явный голос роли → голос по полу героя (female / male)
+    → None — встроенный голос Chatterbox."""
+    value = voices.get(speaker) or (voices.get(gender) if gender else "")
     if not value:
         return None
     path = Path(value) if Path(value).is_absolute() else ROOT / value
@@ -41,10 +45,16 @@ def synthesize_scene(scene: dict, engine: TTSEngine, preset: str | None = None,
     seed = tts_cfg["seed"] if seed is None else seed
     out_path = Path(out_path or default_audio_path(engine.cfg, scene))
     scene = copy.deepcopy(scene)
+    voices = tts_cfg["voices"]
+    genders = scene.get("meta", {}).get("genders", {})
+    if missing := sorted({genders[s] for s in {l["speaker"] for l in scene["script"]}
+                          if s in genders and not voices.get(s) and not voices.get(genders[s])}):
+        log.warning("Нет референс-голоса для пола %s (tts.voices в config/base.toml) — "
+                    "эти роли озвучит встроенный голос", ", ".join(missing))
 
     parts, cursor = [], 0
     for i, line in enumerate(scene["script"]):
-        voice = resolve_voice(line["speaker"], tts_cfg["voices"])
+        voice = resolve_voice(line["speaker"], voices, genders.get(line["speaker"]))
         audio, stressed = engine.synthesize(line["text"], params, voice, seed=seed + 1000 * i)
         sr = engine.sr
         if i:

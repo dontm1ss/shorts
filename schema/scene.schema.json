@@ -87,7 +87,15 @@
 
     "meta": {
       "type": "object",
-      "description": "данные конкретного формата: title, contacts (iMessage), source (форум) и т.п."
+      "description": "данные конкретного формата: title, contacts (iMessage), source (форум) и т.п.",
+      "properties": {
+        "genders": {
+          "type": "object",
+          "description": "пол героев по ролям — выбор голоса озвучки (tts.voices.female / male)",
+          "propertyNames": { "pattern": "^(narrator|[A-Z])$" },
+          "additionalProperties": { "enum": ["female", "male"] }
+        }
+      }
     },
 
     "output": {

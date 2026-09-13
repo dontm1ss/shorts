@@ -17,8 +17,9 @@ class FakeClient:
         return self.responses.pop(0)
 
 
-STORY = {"title": "Табличка", "text": "Три года сосед занимал моё место.\n\nЯ повесил табличку. Он сдался."}
-DRAMA = {"title": "Скрин", "contacts": {"A": "Лена", "B": "Я"},
+STORY = {"title": "Табличка", "gender": "male",
+         "text": "Три года сосед занимал моё место.\n\nЯ повесил табличку. Он сдался."}
+DRAMA = {"title": "Скрин", "contacts": {"A": "Лена", "B": "Я"}, "genders": {"A": "Ж", "B": "female", "C": "male"},
          "messages": [{"speaker": "a", "text": "Ты правда думала, что я не узнаю?"},
                       {"speaker": "B", "text": "О чём ты?"}, {"speaker": "A", "text": "  "}]}
 
@@ -38,8 +39,19 @@ def test_adapt_story_prompt_and_result(dev_cfg):
     story = adapt_story({"title": "Neighbor", "text": "He parked in my spot."}, client, dev_cfg)
     system, user = client.calls[0]
     assert "169–203 слов" in system and "50–60 секунд" in system and "словами" in system
+    assert '"gender"' in system                                          # пол рассказчика — для голоса
     assert "He parked in my spot." in user
     assert story == STORY
+
+
+@pytest.mark.parametrize("raw, gender", [("male", "male"), ("Женский", "female"), ("ж", "female"),
+                                         ("unknown", None), (None, None)])
+def test_story_gender_normalized(dev_cfg, raw, gender):
+    story = adapt_story({"title": "", "text": "x"}, FakeClient({**STORY, "gender": raw}), dev_cfg)
+    assert story["gender"] == gender
+    scene = story_scene(story, dev_cfg)
+    assert scene_errors(scene) == []
+    assert scene["meta"]["genders"] == ({"narrator": gender} if gender else {})
 
 
 def test_adapt_story_rejects_empty(dev_cfg):
@@ -62,6 +74,7 @@ def test_drama_normalized(dev_cfg):
     assert [m["speaker"] for m in drama["messages"]] == ["A", "B"]      # регистр исправлен, пустое убрано
     scene = drama_scene(drama, dev_cfg)
     assert scene_errors(scene) == [] and scene["meta"]["contacts"]["A"] == "Лена"
+    assert scene["meta"]["genders"] == {"A": "female", "B": "female"}     # «Ж» распознан, чужая роль C убрана
 
 
 def test_drama_rejects_unknown_speaker(dev_cfg):
@@ -83,6 +96,7 @@ def test_rewrite_keeps_identity(dev_cfg):
     assert new["scene_id"] == scene["scene_id"] and new["output"] == scene["output"]
     assert len(new["script"]) == 3
     assert "расширь" in client.calls[0][0]
+    assert new["meta"]["genders"] == {"narrator": "male"}      # в ответе пола нет — остаётся прежний
 
 
 def test_rewrite_drama_direction(dev_cfg):

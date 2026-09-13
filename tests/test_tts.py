@@ -194,6 +194,27 @@ def test_voice_resolution(tmp_path):
     with pytest.raises(FileNotFoundError, match="'A'"):
         resolve_voice("A", {"A": "voices/nope.wav"})
 
+    female, role_b = tmp_path / "f.wav", tmp_path / "b.wav"
+    for path in (female, role_b):
+        sf.write(path, np.zeros(SR), SR)
+    voices = {"female": str(female), "male": "", "A": "", "B": str(role_b)}
+    assert resolve_voice("A", voices, "female") == female        # по полу героя
+    assert resolve_voice("B", voices, "female") == role_b        # явный голос роли важнее пола
+    assert resolve_voice("A", voices, "male") is None            # мужской не задан — встроенный
+    assert resolve_voice("A", voices, None) is None
+
+
+def test_voices_by_gender(dev_cfg, tmp_path):
+    female, male = tmp_path / "f.wav", tmp_path / "m.wav"
+    for path in (female, male):
+        sf.write(path, np.zeros(SR), SR)
+    dev_cfg["tts"]["voices"].update(female=str(female), male=str(male))
+    scene = mock_scene("imessage_drama")
+    scene["meta"]["genders"] = {"A": "male", "B": "female"}
+    engine = FakeEngine(dev_cfg)
+    synthesize_scene(scene, engine, out_path=tmp_path / "o.wav")
+    assert [v for _, v in engine.calls] == [male, female, male, female]   # A, B, A, B
+
 
 def test_scene_without_script(dev_cfg, tmp_path):
     with pytest.raises(SceneError, match="нет script"):

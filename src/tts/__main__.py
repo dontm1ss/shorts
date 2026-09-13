@@ -27,7 +27,9 @@ def _cmd_scene(args, cfg, engine: TTSEngine) -> int:
     scene = load_scene(args.scene)
     voices = cfg["tts"]["voices"]
     speakers = {line["speaker"] for line in scene.get("script", [])}
-    if len(speakers) > 1 and len({voices.get(s, "") for s in speakers}) == 1:
+    genders = scene.get("meta", {}).get("genders", {})
+    chosen = {voices.get(s) or voices.get(genders.get(s) or "", "") for s in speakers}
+    if len(speakers) > 1 and len(chosen) == 1:
         log.warning("Все роли (%s) озвучены одним голосом — задайте tts.voices в config/base.toml",
                     ", ".join(sorted(speakers)))
 

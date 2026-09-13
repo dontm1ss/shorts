@@ -17,6 +17,18 @@ from scripting.client import DeepSeekClient
 _WORD = re.compile(r"[^\W\d_]+(?:-[^\W\d_]+)*|\d+")
 DRAMA_MESSAGES = (14, 26)
 _EST_DRAMA_MESSAGES = 20
+_GENDER_ALIASES = {"female": "female", "f": "female", "woman": "female", "женский": "female", "ж": "female",
+                   "male": "male", "m": "male", "man": "male", "мужской": "male", "м": "male"}
+
+
+def normalize_gender(value) -> str | None:
+    """Пол героя из ответа DeepSeek → female | male; непонятное — None (голос по умолчанию)."""
+    return _GENDER_ALIASES.get(str(value or "").strip().lower())
+
+
+def _genders(raw: dict) -> dict:
+    """{роль: пол} только с распознанным полом."""
+    return {role: g for role, value in (raw or {}).items() if (g := normalize_gender(value))}
 
 
 class ScriptError(ValueError):
@@ -57,7 +69,8 @@ def _limits(cfg: dict, messages: int = 1) -> dict:
 def _check_story(data: dict) -> dict:
     if not isinstance(data.get("text"), str) or not data["text"].strip():
         raise ScriptError(f"DeepSeek вернул историю без текста: {str(data)[:200]}")
-    return {"title": str(data.get("title", "")).strip()[:80], "text": data["text"].strip()}
+    return {"title": str(data.get("title", "")).strip()[:80], "gender": normalize_gender(data.get("gender")),
+            "text": data["text"].strip()}
 
 
 def _check_drama(data: dict) -> dict:
@@ -75,6 +88,7 @@ def _check_drama(data: dict) -> dict:
     contacts = data.get("contacts") or {}
     return {"title": str(data.get("title", "")).strip()[:80],
             "contacts": {"A": str(contacts.get("A") or "Контакт"), "B": str(contacts.get("B") or "Я")},
+            "genders": _genders({k: v for k, v in (data.get("genders") or {}).items() if k in ("A", "B")}),
             "messages": clean}
 
 
@@ -143,26 +157,30 @@ def story_scene(story: dict, cfg: dict, source: dict | None = None) -> dict:
     scene = _new_scene("reddit_story", cfg)
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", story["text"]) if p.strip()]
     scene["script"] = [{"speaker": "narrator", "text": " ".join(p.split())} for p in paragraphs]
-    scene["meta"] = {"title": story["title"], "source": source or {}}
+    scene["meta"] = {"title": story["title"], "source": source or {},
+                     "genders": _genders({"narrator": story.get("gender")})}
     return validate_scene(scene)
 
 
 def drama_scene(drama: dict, cfg: dict, topic: str | None = None) -> dict:
     scene = _new_scene("imessage_drama", cfg)
     scene["script"] = [{"speaker": m["speaker"], "text": m["text"]} for m in drama["messages"]]
-    scene["meta"] = {"title": drama["title"], "contacts": drama["contacts"], "topic": topic or ""}
+    scene["meta"] = {"title": drama["title"], "contacts": drama["contacts"], "topic": topic or "",
+                     "genders": _genders(drama.get("genders"))}
     return validate_scene(scene)
 
 
 def scene_story(scene: dict) -> dict:
     """Обратно из сцены — для переписывания под хронометраж."""
-    return {"title": scene.get("meta", {}).get("title", ""),
+    meta = scene.get("meta", {})
+    return {"title": meta.get("title", ""), "gender": meta.get("genders", {}).get("narrator"),
             "text": "\n\n".join(line["text"] for line in scene["script"])}
 
 
 def scene_drama(scene: dict) -> dict:
     meta = scene.get("meta", {})
     return {"title": meta.get("title", ""), "contacts": meta.get("contacts", {"A": "Контакт", "B": "Я"}),
+            "genders": meta.get("genders", {}),
             "messages": [{"speaker": l["speaker"], "text": l["text"]} for l in scene["script"]]}
 
 
@@ -176,4 +194,6 @@ def rewrite_scene_length(scene: dict, current_s: float, client: DeepSeekClient, 
         new = story_scene(adjust_story(scene_story(scene), current_s, client, cfg), cfg,
                           scene.get("meta", {}).get("source"))
     new.update(scene_id=scene["scene_id"], created_at=scene["created_at"], output=scene["output"])
+    # пол героев не меняется при переписывании — голос озвучки остаётся тем же
+    new["meta"]["genders"] = {**new["meta"].get("genders", {}), **scene.get("meta", {}).get("genders", {})}
     return validate_scene(new)
