@@ -27,11 +27,11 @@ line_overhead_s = 0.3
 max_fit_rounds = 3      # сколько раз переписывать текст под хронометраж
 
 [paths]
-parkour = "parkur.mp4"
 source_videos = "data/source-videos"
 output = "output"
-mock_data = "mock-data"
 processed_forum_ids = "data/processed-forum-ids.json"
+scripting_history = "data/scripting-history.json"   # для разнообразия историй/переписок (scripting.params)
+manifest = "output/manifest.json"                   # список готовых роликов (pipeline.manifest)
 
 [deepseek]
 base_url = "https://api.deepseek.com"
@@ -126,6 +126,17 @@ css_width = 360              # ширина «телефона» в CSS-пикс
 typing_ms = 1400             # сколько собеседник «печатает» перед сообщением
 min_gap_ms = 350             # индикатор набора — не раньше, чем через столько после прошлого сообщения
 browser_channel = "msedge"   # системный браузер для Playwright: msedge | chrome | chromium (скачанный)
+
+# Пул фоновых видео нижнего слоя (full_bg/top_bottom/ui_over_bg) — на каждую сцену
+# (compositor.pick_background) случайно выбирается одно и случайный отрезок из него.
+# Добавить новое: скопировать блок, name — короткий идентификатор (пишется в scene.background.type).
+[[backgrounds]]
+name = "parkour_minecraft"
+path = "parkur.mp4"
+
+[[backgrounds]]
+name = "subway_surfers"
+path = "subway.mp4"
 
 [compositor]
 clip_fit = "cover"        # cover — заполнить область с обрезкой краёв; contain — вписать на размытом фоне

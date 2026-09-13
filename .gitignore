@@ -13,6 +13,7 @@ __pycache__/
 # Состояние машины: скачанные посты (чужой контент) и список использованных
 data/forum-posts/
 data/processed-forum-ids.json
+data/scripting-history.json
 
 # Node
 node_modules/

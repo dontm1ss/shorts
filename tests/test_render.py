@@ -1,6 +1,7 @@
 """Композитор + рендерер на синтетических медиа (ffmpeg lavfi): все раскладки, фон, субтитры,
 запасной энкодер. Без модели TTS и без сети; ~10–20 с."""
 import random
+import subprocess
 import uuid
 
 import pytest
@@ -27,21 +28,46 @@ def lavfi(dst, video=None, audio=None, duration=5.0):
     return dst
 
 
+def lavfi_alpha_split(dst, duration=4.0):
+    """Пол-кадра непрозрачно-белое, пол-кадра прозрачное — как настоящая запись iMessage
+    (recorder.py: qtrle/argb, прозрачный фон страницы). Проверяет, что overlay в
+    layouts.py реально учитывает альфу, а не рисует поверх фона сплошной прямоугольник.
+    color=white@0.0 альфу не даёт (в source-фильтре color она игнорируется, кадр всегда
+    выходит непрозрачным yuv420p) — альфу через geq по координате X."""
+    run_ffmpeg(["-f", "lavfi",
+               "-i", f"color=c=white:s=200x150:d={duration},format=yuva420p,"
+                     "geq=r=255:g=255:b=255:a='if(lt(X,100),255,0)'",
+               "-c:v", "qtrle", str(dst)])
+    return dst
+
+
+def sample_pixel(path, x, y, t=0.1):
+    """RGB верхнего левого угла блока 2×2 кадра — проверить, что дошло до итогового рендера,
+    а не просто «файл не упал». crop=1:1 (ровно один пиксель) в этой версии ffmpeg падает
+    с «Invalid too big or non positive size» — берём 2×2 и читаем первый пиксель."""
+    proc = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", str(t), "-i", str(path),
+         "-frames:v", "1", "-vf", f"crop=2:2:{x}:{y}", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+        capture_output=True)
+    return tuple(proc.stdout[:3])
+
+
 @pytest.fixture(scope="module")
 def media(tmp_path_factory):
     d = tmp_path_factory.mktemp("media")
     return {
         "parkour": lavfi(d / "parkour.mp4", "testsrc2=s=640x360:r=30", "sine=f=200", 20),
+        "red_bg": lavfi(d / "red_bg.mp4", "color=c=red:s=640x360:r=30", "sine=f=200", 20),
         "source": lavfi(d / "source.mp4", "testsrc=s=1280x720:r=30", "sine=f=330", 8),
         "silent": lavfi(d / "silent.mp4", "testsrc=s=1280x720:r=30", None, 6),
         "voice": lavfi(d / "voice.wav", None, "sine=f=440:sample_rate=24000", 4),
-        "ui": lavfi(d / "ui.mp4", "color=c=white:s=1080x1150:r=30", None, 4),
+        "ui": lavfi_alpha_split(d / "ui.mov", 4),
     }
 
 
 @pytest.fixture
 def cfg(dev_cfg, media, tmp_path):
-    dev_cfg["paths"]["parkour"] = str(media["parkour"])
+    dev_cfg["backgrounds"] = [{"name": "test_bg", "path": str(media["parkour"])}]
     dev_cfg["paths"]["output"] = str(tmp_path / "output")
     dev_cfg["render"]["encoder"] = "libx264"
     dev_cfg["render"]["encoder_args"] = FAST_X264
@@ -108,6 +134,25 @@ def test_drama_ui_over_bg(cfg, media, tmp_path):
     scene["background"] = pick_background(cfg, 5000, random.Random(4))
     render_scene(scene, cfg, ui_video=media["ui"])
     check_video(scene["output"]["path"], 4.0 + cfg["compositor"]["tail_ms"] / 1000)
+
+
+def test_drama_ui_over_bg_is_transparent(cfg, media, tmp_path):
+    """Фон iMessage-интерфейса прозрачный (style.css) — фоновое видео должно быть видно
+    сквозь него, а не только в нижней части кадра (owner: убрать белый фон, оставить
+    сообщения на фоне паркура/сабвея)."""
+    cfg["backgrounds"] = [{"name": "red_bg", "path": str(media["red_bg"])}]
+    scene = voiced(base_scene(cfg, "imessage_drama", tmp_path), media)
+    scene["script"][0]["speaker"] = "A"
+    scene["script"][1]["speaker"] = "B"
+    scene["background"] = pick_background(cfg, 5000, random.Random(4))
+    render_scene(scene, cfg, ui_video=media["ui"])
+    out = scene["output"]["path"]
+    # фикстура "ui" — левая половина непрозрачно-белая, правая полностью прозрачная;
+    # если бы overlay игнорировал альфу, обе половины были бы белыми
+    opaque = sample_pixel(out, 10, 10)
+    transparent = sample_pixel(out, cfg["video"]["width"] - 10, 10)
+    assert all(c > 240 for c in opaque)
+    assert transparent[0] > 180 and transparent[1] < 80 and transparent[2] < 80   # красный фон просвечивает
 
 
 def test_falls_back_to_libx264(cfg, media, tmp_path):

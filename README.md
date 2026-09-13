@@ -18,12 +18,15 @@
 powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
 ```
 
-Затем `DEEPSEEK_API_KEY` в `.env` (шаблон — `.env.example`) и `parkur.mp4` в корень репозитория.
-Для стабильного сбора постов — ключи приложения Reddit типа «script» (`REDDIT_CLIENT_ID`,
-`REDDIT_CLIENT_SECRET` в `.env`); без них посты берутся из RSS с жёстким лимитом запросов.
+Затем `DEEPSEEK_API_KEY` в `.env` (шаблон — `.env.example`) и `parkur.mp4` в корень репозитория —
+это фон по умолчанию из пула `[[backgrounds]]` в `config/base.toml`; туда же добавляются
+дополнительные фоновые видео (выбор случайный на каждую сцену).
+Источники историй: Pikabu — без ключей (общая RSS-лента); Reddit — без ключей тоже работает
+(RSS с жёстким лимитом запросов), для официального API нужны ключи приложения типа «script»
+(`REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET` в `.env`).
 
 ```bash
-venv\Scripts\python -m pipeline story --mock
+venv\Scripts\python -m pipeline story --scrape 1
 ```
 
 Готовые ролики — в `output/videos/`.
@@ -35,9 +38,8 @@ venv\Scripts\python -m pipeline story --mock
 (`--no-run` — только поставить).
 
 ```bash
-venv\Scripts\python -m pipeline story --mock                     # история из mock-data
+venv\Scripts\python -m pipeline story --scrape 3                 # спарсить Reddit + Pikabu, взять 3 лучших поста
 venv\Scripts\python -m pipeline story --post data\forum-posts\reddit_xxx.json
-venv\Scripts\python -m pipeline story --scrape 3                 # спарсить Reddit и взять 3 лучших поста
 venv\Scripts\python -m pipeline drama --topic "подруга слила переписку" --count 2
 venv\Scripts\python -m pipeline clips data\source-videos\film.mp4 --limit 5
 venv\Scripts\python -m pipeline worker [--watch]                 # выполнить очередь
@@ -56,20 +58,22 @@ venv\Scripts\python -m pipeline retry 12                         # повтор�
 | `video_clip_extraction` | нарезка окном 30/2 с, сцены и цепочки задач на каждый сегмент |
 
 Логи задач — `output/logs/`, состояние каждой сцены — `output/scenes/<scene_id>.json`,
-промежуточные файлы — `output/work/<scene_id>/`.
+промежуточные файлы — `output/work/<scene_id>/`. Список всех готовых роликов (заголовок,
+формат, источник, длительность, путь) — `output/manifest.json`, пополняется после каждого
+`video_render`.
 
 ## Модули по отдельности
 
-Каждый модуль запускается сам по себе на сцене из `output/scenes/` или `mock-data/`:
+Каждый модуль запускается сам по себе на сцене из `output/scenes/` или `tests/fixtures/`:
 
 ```bash
-venv\Scripts\python -m tts scene mock-data\scene.reddit_story.json    # озвучка сцены
-venv\Scripts\python -m tts presets "Текст"                           # сравнить пресеты на слух
-venv\Scripts\python -m subtitles output\scenes\<id>.json              # субтитры
-venv\Scripts\python -m imessage --preview output\scenes\<id>.json     # кадр интерфейса iMessage
-venv\Scripts\python -m imessage output\scenes\<id>.json               # видео интерфейса
-venv\Scripts\python -m video_clipper data\source-videos               # нарезка папки
-venv\Scripts\python -m scraper --sub tifu                             # новые посты в data\forum-posts
+venv\Scripts\python -m tts scene tests\fixtures\scene.reddit_story.json  # озвучка сцены
+venv\Scripts\python -m tts presets "Текст"                             # сравнить пресеты на слух
+venv\Scripts\python -m subtitles output\scenes\<id>.json                # субтитры
+venv\Scripts\python -m imessage --preview output\scenes\<id>.json       # кадр интерфейса iMessage
+venv\Scripts\python -m imessage output\scenes\<id>.json                 # видео интерфейса
+venv\Scripts\python -m video_clipper data\source-videos                 # нарезка папки
+venv\Scripts\python -m scraper --sub tifu                               # новые посты Reddit + Pikabu в data\forum-posts
 ```
 
 ## Структура
@@ -85,16 +89,15 @@ src/
   core/              конфиг и определение железа, сцена, ffmpeg/ffprobe
   tts/               Chatterbox + stressonnx, проверка кусков whisper'ом, синтез сцены по ролям
   subtitles/         faster-whisper, выравнивание по сценарию, ASS с подсветкой слов
-  scripting/         DeepSeek: истории, переписки, подгонка длины
-  scraper/           Reddit RSS, дедупликация
+  scripting/         DeepSeek: истории, переписки, подгонка длины, генератор параметров разнообразия
+  scraper/           Reddit (RSS/API) + Pikabu (RSS), дедупликация
   imessage/          web/ — копия интерфейса iMessage; запись кадров через Playwright
   video_clipper/     нарезка скользящим окном
-  compositor/        паркур-фон, раскладки кадра (сборка команды ffmpeg)
+  compositor/        пул фоновых видео, раскладки кадра (сборка команды ffmpeg)
   renderer/          финальный рендер (энкодер профиля, запасной libx264)
   pipeline/          очередь SQLite, задачи, воркер, CLI
 data/                исходные видео (не в git), посты форумов (не в git)
-mock-data/           моковые сцены и пост для проверки модулей без полного прогона
-tests/               pytest
+tests/               pytest + tests/fixtures/ — моковые сцены для проверки модулей без полного прогона
 output/              всё сгенерированное (не в git)
 ```
 
