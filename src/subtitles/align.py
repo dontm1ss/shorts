@@ -111,6 +111,7 @@ def script_words(scene: dict, asr: list[Word] | None) -> list[Word]:
             raise ValueError("У реплик нет таймкодов — сначала озвучьте сцену (python -m tts scene)")
         t0 = line["timestamp_ms"] / 1000
         t1 = t0 + line["duration_ms"] / 1000
-        words = line["text"].split()
+        # отдельные тире и кавычки — не слова: в титрах не показываются
+        words = [w for w in line["text"].split() if any(c.isalnum() for c in w)]
         result += align_line(words, asr, t0, t1, i) if asr else proportional(words, t0, t1, i)
     return result

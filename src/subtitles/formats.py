@@ -54,8 +54,12 @@ def _ass_color(hex_rgb: str) -> str:
     return f"&H00{b}{g}{r}".upper()
 
 
+_QUOTES = str.maketrans("", "", "«»\"„“”")
+
+
 def _display(word: Word, uppercase: bool) -> str:
-    text = word.text.replace("{", "(").replace("}", ")")
+    """Кавычки в титрах — визуальный мусор; фигурные скобки — служебные в ASS."""
+    text = word.text.translate(_QUOTES).replace("{", "(").replace("}", ")")
     return text.upper() if uppercase else text
 
 

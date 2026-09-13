@@ -29,7 +29,7 @@ def test_word_count():
 
 def test_word_budget_accounts_for_pauses(dev_cfg):
     lo, target, hi = word_budget(dev_cfg)
-    assert (lo, target, hi) == (179, 197, 215)                       # 3.6 слова/с × (50/55/60 с − 0.3 с)
+    assert (lo, target, hi) == (169, 186, 203)                       # 3.4 слова/с × (50/55/60 с − 0.3 с)
     assert word_budget(dev_cfg, messages=20)[1] < target             # паузы между сообщениями съедают время
 
 
@@ -37,7 +37,7 @@ def test_adapt_story_prompt_and_result(dev_cfg):
     client = FakeClient(STORY)
     story = adapt_story({"title": "Neighbor", "text": "He parked in my spot."}, client, dev_cfg)
     system, user = client.calls[0]
-    assert "179–215 слов" in system and "50–60 секунд" in system and "словами" in system
+    assert "169–203 слов" in system and "50–60 секунд" in system and "словами" in system
     assert "He parked in my spot." in user
     assert story == STORY
 
@@ -72,7 +72,7 @@ def test_drama_rejects_unknown_speaker(dev_cfg):
 
 def test_estimate_duration(dev_cfg):
     script = [{"text": "слово " * 24}, {"text": "слово " * 24}]
-    assert estimate_duration_s(script, dev_cfg) == pytest.approx(48 / 3.6 + 0.35 + 2 * 0.3)
+    assert estimate_duration_s(script, dev_cfg) == pytest.approx(48 / 3.4 + 0.35 + 2 * 0.3)
 
 
 def test_rewrite_keeps_identity(dev_cfg):

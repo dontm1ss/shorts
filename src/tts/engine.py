@@ -16,6 +16,7 @@ from pathlib import Path
 import numpy as np
 
 from subtitles.align import Word, normalize
+from tts.text import normalize_for_tts
 
 log = logging.getLogger(__name__)
 
@@ -189,7 +190,7 @@ class TTSEngine:
                    seed: int | None = None) -> tuple[np.ndarray, str]:
         """Текст → (моно float32 с частотой self.sr, текст с ударениями)."""
         seed = self.tts_cfg["seed"] if seed is None else seed
-        stressed = self.stress(text)
+        stressed = self.stress(normalize_for_tts(text, self.tts_cfg["language_id"]))
         parts = []
         for i, chunk in enumerate(split_into_chunks(stressed, self.tts_cfg["max_chars_per_chunk"])):
             if parts:

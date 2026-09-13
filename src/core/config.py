@@ -182,9 +182,10 @@ def load_config(profile: str | None = None, hw: dict | None = None) -> dict:
     cfg["profile"]["matches_hardware"] = profile_matches(profiles[name], hw)
     cfg["hardware"] = hw
     cfg["paths"]["root"] = str(ROOT)
-    cfg["deepseek"]["api_key"] = (
-        os.environ.get("DEEPSEEK_API_KEY") or env_file.get("DEEPSEEK_API_KEY") or None
-    )
+    secret = lambda name: os.environ.get(name) or env_file.get(name) or None  # noqa: E731
+    cfg["deepseek"]["api_key"] = secret("DEEPSEEK_API_KEY")
+    cfg["scraper"]["reddit_client_id"] = secret("REDDIT_CLIENT_ID")
+    cfg["scraper"]["reddit_client_secret"] = secret("REDDIT_CLIENT_SECRET")
     # Переменные, которые должны быть выставлены до импорта torch
     for key, value in cfg["tts"].get("env", {}).items():
         os.environ.setdefault(key, value)
@@ -248,8 +249,9 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else value)
     elif args.json:
         shown = copy.deepcopy(cfg)
-        if shown["deepseek"]["api_key"]:
-            shown["deepseek"]["api_key"] = "***"
+        for section, key in (("deepseek", "api_key"), ("scraper", "reddit_client_secret")):
+            if shown[section].get(key):
+                shown[section][key] = "***"
         print(json.dumps(shown, ensure_ascii=False, indent=2))
     else:
         print(_summary(cfg))

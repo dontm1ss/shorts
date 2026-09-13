@@ -1,7 +1,10 @@
-"""Сбор постов с Reddit через публичную RSS-ленту (Atom), без авторизации.
+"""Сбор постов с Reddit.
 
-JSON-эндпоинты Reddit без OAuth отвечают 403, RSS доступен, но с жёстким лимитом —
-поэтому пауза между запросами и повтор при 429. Для больших объёмов нужен OAuth-клиент.
+Два источника:
+- официальный API (OAuth, app-only) — если в .env заданы REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET:
+  100 запросов в минуту, есть рейтинг, NSFW-флаг и тип поста;
+- публичная RSS-лента (Atom) — без ключей. JSON-эндпоинты без OAuth отвечают 403, у RSS жёсткий
+  лимит, поэтому пауза между запросами и повтор при 429.
 
 Фильтры только технические (ТЗ 2.4): есть текст, не удалён, длина в пределах.
 По лексике не фильтруем.
@@ -72,8 +75,33 @@ def parse_feed(xml_bytes: bytes, subreddit: str) -> list[dict]:
     return posts
 
 
+def parse_listing(data: dict, subreddit: str) -> list[dict]:
+    """Ответ API /r/<sub>/<sort> (Listing) → посты в общем формате."""
+    posts = []
+    for child in data.get("data", {}).get("children", []):
+        p = child.get("data", {})
+        posts.append({
+            "id": f"reddit:{p.get('id')}",
+            "source": "reddit",
+            "subreddit": p.get("subreddit", subreddit),
+            "title": p.get("title", ""),
+            "text": p.get("selftext", ""),
+            "url": "https://www.reddit.com" + p.get("permalink", ""),
+            "score": p.get("score", 0),
+            "over_18": bool(p.get("over_18")),
+            "is_self": bool(p.get("is_self", True)),
+            "stickied": bool(p.get("stickied")),
+            "published": p.get("created_utc"),
+        })
+    return posts
+
+
 def reject_reason(post: dict, sc: dict) -> str | None:
     text = post["text"].strip()
+    if not post.get("is_self", True):
+        return "не текстовый"
+    if post.get("stickied"):
+        return "закреплён"
     if text in ("", "[removed]", "[deleted]"):
         return "нет текста"
     if not sc["min_chars"] <= len(text) <= sc["max_chars"]:
@@ -81,6 +109,26 @@ def reject_reason(post: dict, sc: dict) -> str | None:
     if sc["exclude_nsfw"] and post["over_18"]:
         return "nsfw"
     return None
+
+
+def oauth_token(sc: dict, session: requests.Session) -> str:
+    resp = session.post("https://www.reddit.com/api/v1/access_token",
+                        auth=(sc["reddit_client_id"], sc["reddit_client_secret"]),
+                        data={"grant_type": "client_credentials"}, timeout=30)
+    if resp.status_code != 200 or "access_token" not in resp.json():
+        raise RuntimeError(f"OAuth Reddit: HTTP {resp.status_code} {resp.text[:200]}")
+    return resp.json()["access_token"]
+
+
+def fetch_subreddit_api(subreddit: str, sc: dict, session: requests.Session, token: str) -> list[dict]:
+    params = {"limit": sc["limit"], "raw_json": 1}
+    if sc["sort"] == "top":
+        params["t"] = sc["time_filter"]
+    resp = session.get(f"https://oauth.reddit.com/r/{subreddit}/{sc['sort']}", params=params, timeout=30,
+                       headers={"Authorization": f"bearer {token}"})
+    if resp.status_code != 200:
+        raise RuntimeError(f"HTTP {resp.status_code}")
+    return parse_listing(resp.json(), subreddit)
 
 
 def fetch_subreddit(subreddit: str, sc: dict, session: requests.Session, retries: int = 3) -> list[dict]:
@@ -105,12 +153,19 @@ def scrape(cfg: dict, subreddits: list[str] | None = None) -> list[dict]:
     done = load_processed(cfg)
     session = requests.Session()
     session.headers["User-Agent"] = sc["user_agent"]
+    token = None
+    if sc.get("reddit_client_id") and sc.get("reddit_client_secret"):
+        try:
+            token = oauth_token(sc, session)
+            log.info("Reddit: официальный API (OAuth)")
+        except (requests.RequestException, RuntimeError) as e:
+            log.warning("OAuth Reddit не удался (%s) — перехожу на RSS", e)
     new_posts = []
     for i, sub in enumerate(subreddits or sc["subreddits"]):
         if i:
-            time.sleep(sc["request_delay_s"])
+            time.sleep(1 if token else sc["request_delay_s"])
         try:
-            posts = fetch_subreddit(sub, sc, session)
+            posts = fetch_subreddit_api(sub, sc, session, token) if token else fetch_subreddit(sub, sc, session)
         except (requests.RequestException, RuntimeError, ET.ParseError) as e:
             log.warning("Пропускаю r/%s: %s", sub, e)
             continue

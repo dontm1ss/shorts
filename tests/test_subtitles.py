@@ -98,4 +98,4 @@ def test_srt_and_ass(tmp_path, dev_cfg):
     assert "\\pos(540,960)" in events[0]                  # стык клипа и паркура
     assert re.search(r"\\1c&H0000E6FF[^}]*}ПРИВЕТ,\{\\r\} МИР!", events[0])
     assert re.search(r"ПРИВЕТ, \{\\1c&H0000E6FF[^}]*}МИР!", events[1])
-    assert "Style: Default,Arial Black,84" in ass
+    assert "Style: Default,Arial Black,92" in ass

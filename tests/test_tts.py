@@ -204,3 +204,15 @@ def test_unknown_preset(dev_cfg, tmp_path):
     with pytest.raises(ValueError, match="Неизвестный пресет"):
         synthesize_scene(mock_scene("reddit_story"), FakeEngine(dev_cfg), preset="loud",
                          out_path=tmp_path / "x.wav")
+
+
+@pytest.mark.parametrize("raw, spoken", [
+    ("Мне 3 года.", "Мне три года."),
+    ("Встретимся в 21:30!", "Встретимся в двадцать один тридцать!"),
+    ("Скидка 50% на всё", "Скидка пятьдесят процентов на всё"),
+    ("Poof! Ты свободна 😑", "Poof! Ты свободна"),
+    ("Без цифр — как есть…", "Без цифр — как есть…"),
+])
+def test_normalize_for_tts(raw, spoken):
+    from tts.text import normalize_for_tts
+    assert normalize_for_tts(raw) == spoken

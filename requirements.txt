@@ -6,6 +6,7 @@ setuptools<81            # иначе ломается watermarker Perth (tts-st
 chatterbox-tts==0.1.7
 librosa==0.11.0
 stressonnx==0.0.2
+num2words==0.5.14        # цифры → слова перед озвучкой (страховка)
 faster-whisper==1.2.1
 jsonschema==4.26.0
 requests>=2.32

@@ -98,10 +98,17 @@ def _direction(current_s: float, target_s: float) -> str:
     return "сократи" if current_s > target_s else "расширь, добавив деталей и эмоций,"
 
 
+def _ask_words(current_words: int, current_s: float, target_s: float) -> int:
+    """Сколько слов просить. LLM стабильно недотягивает при расширении и перебирает при
+    сокращении — просим с запасом."""
+    bias = 1.1 if current_s < target_s else 0.95
+    return round(current_words * target_s / current_s * bias)
+
+
 def adjust_story(story: dict, current_s: float, client: DeepSeekClient, cfg: dict) -> dict:
     target_s = cfg["story"]["target_duration_s"]
     current_words = word_count(story["text"])
-    target_words = round(current_words * target_s / current_s)
+    target_words = _ask_words(current_words, current_s, target_s)
     system = prompts.ADJUST_STORY_SYSTEM.format(direction=_direction(current_s, target_s),
                                                 target_words=target_words, current_words=current_words,
                                                 format_rules=prompts.FORMAT_RULES)
@@ -114,7 +121,7 @@ def adjust_drama(drama: dict, current_s: float, client: DeepSeekClient, cfg: dic
     speech_now = max(1.0, current_s - _overhead_s(cfg, n))
     speech_target = target_s - _overhead_s(cfg, n)
     current_words = sum(word_count(m["text"]) for m in drama["messages"])
-    target_words = round(current_words * speech_target / speech_now)
+    target_words = _ask_words(current_words, speech_now, speech_target)
     system = prompts.ADJUST_DRAMA_SYSTEM.format(direction=_direction(current_s, target_s),
                                                 target_words=target_words, current_words=current_words,
                                                 format_rules=prompts.FORMAT_RULES)

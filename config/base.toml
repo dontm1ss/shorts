@@ -21,8 +21,8 @@ min_duration_s = 50
 max_duration_s = 60
 target_duration_s = 55
 # Темп озвучки для оценки длины текста до синтеза. Замер Chatterbox (neutral, после обрезки
-# хвостов): ~3.6 слова/с + ~0.3 с на реплику. Точный хронометраж проверяется после TTS.
-words_per_second = 3.6
+# хвостов): ~3.4 слова/с + ~0.3 с на реплику (замер: 165 слов, 5 реплик → 51.9 с). Точный хронометраж проверяется после TTS.
+words_per_second = 3.4
 line_overhead_s = 0.3
 max_fit_rounds = 3      # сколько раз переписывать текст под хронометраж
 
@@ -102,7 +102,7 @@ uppercase = true
 
 [subtitles.style]
 font = "Arial Black"
-size = 84
+size = 92
 color = "#FFFFFF"
 highlight_color = "#FFE600"   # текущее слово
 outline_color = "#000000"
