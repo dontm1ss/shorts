@@ -1,6 +1,6 @@
 """CLI записи интерфейса iMessage для озвученной сцены.
 
-    venv\\Scripts\\python -m imessage output/scenes/<scene_id>.json [--out ui.mp4]
+    venv\\Scripts\\python -m imessage output/scenes/<scene_id>.json [--out ui.mov]
     venv\\Scripts\\python -m imessage --preview output/scenes/<scene_id>.json   # один кадр PNG
 """
 import argparse
@@ -49,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.preview:
         out = preview(scene, cfg, args.out or work_dir(cfg, scene) / "ui_preview.png", args.at)
     else:
-        out = record_scene(scene, cfg, args.out or work_dir(cfg, scene) / "ui.mp4")
+        out = record_scene(scene, cfg, args.out or work_dir(cfg, scene) / "ui.mov")
     logging.info("→ %s", out)
     return 0
 

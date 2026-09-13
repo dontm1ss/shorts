@@ -63,7 +63,7 @@ def abs_path(path: str | Path) -> Path:
 
 # Раскладка output/:
 #   scenes/<scene_id>.json     — актуальное состояние сцены (передаётся между этапами)
-#   work/<scene_id>/           — промежуточные файлы: voice.wav, subs.ass, subs.srt, ui.mp4
+#   work/<scene_id>/           — промежуточные файлы: voice.wav, subs.ass, subs.srt, ui.mov
 #   videos/<type>_<id8>.mp4    — готовые ролики
 def output_dir(cfg: dict, *parts: str) -> Path:
     return ROOT / cfg["paths"]["output"] / Path(*parts)

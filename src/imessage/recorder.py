@@ -3,6 +3,12 @@
 Кадры снимаются детерминированно (renderAt(t)), а не записью экрана в реальном времени:
 видео точно совпадает с озвучкой на любом железе, даже если скриншоты медленные (i3).
 Кадры без изменений не снимаются повторно — большая часть ролика статична.
+
+Фон страницы прозрачный (style.css) — Playwright снимает PNG с настоящей альфой
+(omit_background), а промежуточное видео пишется кодеком с альфа-каналом (qtrle/.mov,
+без потерь, лёгкий по CPU — быстрее любого альтернативного alpha-кодека, а такой
+промежуточный файл не идёт в финальный рендер и не должен быть маленьким). h264/yuv420p
+здесь не подходит — там альфы нет вообще, и фон под сообщениями стал бы снова непрозрачным.
 """
 from __future__ import annotations
 
@@ -46,7 +52,7 @@ def record_timeline(timeline: dict, cfg: dict, out_path: Path) -> Path:
     ffmpeg = subprocess.Popen(
         ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
          "-f", "image2pipe", "-framerate", str(fps), "-c:v", "png", "-i", "-",
-         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "14", "-pix_fmt", "yuv420p", str(out_path)],
+         "-c:v", "qtrle", "-pix_fmt", "argb", str(out_path)],
         stdin=subprocess.PIPE, stderr=subprocess.PIPE)
 
     t0 = time.perf_counter()
@@ -62,7 +68,7 @@ def record_timeline(timeline: dict, cfg: dict, out_path: Path) -> Path:
             for f in range(frames):
                 key = page.evaluate("t => window.renderAt(t)", f * 1000 / fps)
                 if key != last_key:
-                    png = page.screenshot(type="png")
+                    png = page.screenshot(type="png", omit_background=True)
                     last_key = key
                     shots += 1
                 ffmpeg.stdin.write(png)

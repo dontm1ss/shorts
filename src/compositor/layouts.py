@@ -100,7 +100,9 @@ def build_plan(scene: dict, cfg: dict, encoder: str, encoder_args: list[str],
         inputs += _bg_input(scene, duration)                                   # 1: фон
         inputs += ["-i", str(abs_path(scene["audio"]["path"]))]               # 2: озвучка
         graph.append(_fit("1:v", "bgfull", W, H, fps))
-        graph.append(f"[0:v]scale={W}:{ui_h},setsar=1,fps={fps}[ui]")
+        # format=yuva420p явно: альфа записи iMessage (recorder.py, qtrle/argb) должна дойти
+        # до overlay, иначе прозрачный фон интерфейса снова стал бы непрозрачным
+        graph.append(f"[0:v]scale={W}:{ui_h},format=yuva420p,setsar=1,fps={fps}[ui]")
         graph.append("[bgfull][ui]overlay=0:0:eof_action=repeat[base]")
         audio_src = "2:a"
     else:
