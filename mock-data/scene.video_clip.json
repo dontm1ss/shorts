@@ -1,0 +1,12 @@
+{
+  "scene_id": "c5d9e7b2-4a1f-4c8d-8e2b-7f3a1b6c0d55",
+  "type": "video_clip",
+  "created_at": "2026-09-13T12:10:00Z",
+  "source_video": {
+    "path": "data/source-videos/example.mp4",
+    "clip_start_ms": 4000,
+    "clip_end_ms": 34000
+  },
+  "background": { "type": "parkour_minecraft", "source_path": "parkur.mp4", "start_ms": 30000 },
+  "output": { "resolution": "1080x1920", "path": "output/video_clip_c5d9e7b2.mp4" }
+}

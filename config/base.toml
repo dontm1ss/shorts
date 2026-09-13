@@ -1,0 +1,74 @@
+# Общие настройки для всех машин. Профиль железа (config/profiles/*.toml)
+# накладывается поверх: совпадающие ключи профиля перекрывают эти значения.
+
+[video]
+# Вертикальный формат 9:16
+width = 1080
+height = 1920
+fps = 30
+pix_fmt = "yuv420p"
+audio_codec = "aac"
+audio_bitrate = "192k"
+
+[clipper]
+window_s = 30   # длина сегмента
+step_s = 2      # шаг между стартами соседних сегментов
+
+[story]
+min_duration_s = 50
+max_duration_s = 60
+
+[paths]
+parkour = "parkur.mp4"
+source_videos = "data/source-videos"
+output = "output"
+mock_data = "mock-data"
+processed_forum_ids = "data/processed-forum-ids.json"
+
+[deepseek]
+base_url = "https://api.deepseek.com"
+model = "deepseek-chat"
+# api_key — только из .env (DEEPSEEK_API_KEY)
+
+[tts]
+language_id = "ru"
+# Синтез по предложениям, а не абзацами: экономит VRAM и избегает
+# нестабильности модели на длинных входах.
+max_chars_per_chunk = 300
+# Отдельный процесс для TTS (docs/tts-stack-spec.md, раздел 1)
+isolated_process = true
+
+# Стартовые пресеты подачи (docs/tts-stack-spec.md, раздел 9) — уточняются в задаче 3
+[tts.presets.neutral]
+exaggeration = 0.5
+cfg_weight = 0.5
+temperature = 0.8
+
+[tts.presets.energetic]
+exaggeration = 0.7
+cfg_weight = 0.5
+temperature = 0.8
+
+[tts.presets.calm]
+exaggeration = 0.3
+cfg_weight = 0.35
+temperature = 0.7
+
+[subtitles]
+engine = "faster-whisper"
+model = "small"
+language = "ru"
+
+[render]
+# Запасной CPU-энкодер, если аппаратный недоступен
+fallback_encoder = "libx264"
+fallback_encoder_args = ["-preset", "veryfast", "-crf", "21"]
+
+[queue]
+# Тяжёлые задачи (TTS, whisper, рендер) строго последовательно — на всех машинах,
+# чтобы тесты на dev-машинах вели себя так же, как на целевом железе.
+max_parallel_jobs = 1
+
+[runtime]
+cpu_threads = 0                     # 0 = автоопределение
+unload_models_between_jobs = false

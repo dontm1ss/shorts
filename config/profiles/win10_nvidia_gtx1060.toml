@@ -1,0 +1,35 @@
+# ЦЕЛЕВОЕ ЖЕЛЕЗО (боевой запуск): Windows 10, GTX 1060 6 ГБ, Core i3, 16 ГБ RAM
+
+[profile]
+name = "win10_nvidia_gtx1060"
+description = "Windows 10 + NVIDIA GTX 1060 6 ГБ + Intel Core i3 — целевое железо"
+deploy_target = true
+priority = 100   # при нескольких подходящих профилях выигрывает больший
+
+[match]
+os = "Windows"
+gpu_vendor = "nvidia"
+
+[install]
+# torch==2.6.0 собран под cu118/cu124/cu126 (под cu121 — только до 2.5.x).
+# Pascal (CC 6.1) эти сборки поддерживают; сверить с драйвером при установке.
+torch_index_url = "https://download.pytorch.org/whl/cu124"
+
+[tts]
+device = "cuda"
+max_chars_per_chunk = 250   # запас по 6 ГБ VRAM
+
+[subtitles]
+device = "cuda"
+# CTranslate2: float16 требует CC >= 7.0, у GTX 1060 CC 6.1 → int8
+compute_type = "int8"
+
+[render]
+encoder = "h264_nvenc"
+encoder_args = ["-preset", "p5", "-rc", "vbr", "-cq", "23", "-b:v", "0"]
+hwaccel = "cuda"
+
+[runtime]
+cpu_threads = 4
+# TTS и whisper делят 6 ГБ VRAM — выгружать модель после каждой джобы
+unload_models_between_jobs = true

@@ -1,0 +1,30 @@
+# DEV-машина: Windows 11, AMD Radeon RX 6600, Ryzen 5 5600X, 16 ГБ RAM
+# CUDA и NVENC недоступны — TTS и whisper на CPU, кодирование через AMF.
+
+[profile]
+name = "win11_amd"
+description = "Windows 11 + AMD Radeon RX 6600 + Ryzen 5 5600X — разработка/тесты"
+deploy_target = false
+priority = 50
+
+[match]
+os = "Windows"
+gpu_vendor = "amd"
+
+[install]
+torch_index_url = "https://download.pytorch.org/whl/cpu"
+
+[tts]
+device = "cpu"
+
+[subtitles]
+device = "cpu"
+compute_type = "int8"
+
+[render]
+encoder = "h264_amf"
+encoder_args = ["-quality", "balanced", "-rc", "cqp", "-qp_i", "22", "-qp_p", "24"]
+hwaccel = "d3d11va"
+
+[runtime]
+cpu_threads = 0

@@ -1,0 +1,37 @@
+# Секреты и локальные конфиги
+.env
+*.local.json
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Node
+node_modules/
+
+# Тяжёлые медиа — не в git
+parkur.mp4
+shorts/parkur.mp4
+data/source-videos/*
+!data/source-videos/.gitkeep
+output/*
+!output/.gitkeep
+*.wav
+*.mp3
+
+# Кэш моделей
+models/
+.cache/
+
+# Obsidian: локальное состояние окна и плагины (local-rest-api хранит ключи в data.json)
+shortsobs/.obsidian/workspace*.json
+shortsobs/.obsidian/plugins/
+
+# ОС / IDE
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
