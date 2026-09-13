@@ -18,9 +18,11 @@ data/scripting-history.json
 # Node
 node_modules/
 
-# Тяжёлые медиа — не в git
+# Тяжёлые медиа — не в git (пул фоновых видео config/base.toml [[backgrounds]] —
+# новые файлы добавлять сюда же, а не только в конфиг)
 parkur.mp4
 shorts/parkur.mp4
+subway.mp4
 data/source-videos/*
 !data/source-videos/.gitkeep
 output/*
