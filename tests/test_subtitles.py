@@ -90,12 +90,20 @@ def test_srt_and_ass(tmp_path, dev_cfg):
     groups = [[Word("Привет,", 0.0, 0.4), Word("мир!", 0.5, 0.9)], [Word("Пока", 1.5, 1.9)]]
     srt = write_srt(groups, tmp_path / "s.srt", uppercase=True).read_text(encoding="utf-8")
     assert "00:00:00,000 --> 00:00:01,400" in srt       # держится до следующего титра (≤ +0.5 с)
-    assert "ПРИВЕТ, МИР!" in srt
+    assert "ПРИВЕТ МИР\n" in srt                         # без знаков препинания
 
     ass = write_ass(groups, tmp_path / "s.ass", dev_cfg["subtitles"], "top_bottom").read_text(encoding="utf-8")
     events = [line for line in ass.splitlines() if line.startswith("Dialogue:")]
     assert len(events) == 3                               # по событию на каждое подсвеченное слово
     assert "\\pos(540,960)" in events[0]                  # стык клипа и паркура
-    assert re.search(r"\\1c&H0000E6FF[^}]*}ПРИВЕТ,\{\\r\} МИР!", events[0])
-    assert re.search(r"ПРИВЕТ, \{\\1c&H0000E6FF[^}]*}МИР!", events[1])
+    assert re.search(r"\\1c&H0000E6FF[^}]*}ПРИВЕТ\{\\r\} МИР$", events[0])
+    assert re.search(r"ПРИВЕТ \{\\1c&H0000E6FF[^}]*}МИР\{\\r\}$", events[1])
     assert "Style: Default,Arial Black,92" in ass
+
+
+def test_display_strips_punctuation(tmp_path):
+    groups = [[Word("«Кто-то,", 0.0, 0.4), Word("—", 0.4, 0.5), Word("{сказал}...", 0.5, 0.9)],
+              [Word("-", 1.0, 1.1)]]
+    srt = write_srt(groups, tmp_path / "s.srt").read_text(encoding="utf-8")
+    assert "Кто-то сказал\n" in srt                      # дефис внутри слова остаётся
+    assert srt.count("-->") == 1                         # титр из одного тире не показывается

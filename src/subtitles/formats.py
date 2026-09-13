@@ -1,6 +1,7 @@
 """Группировка слов в титры и запись SRT / ASS (ASS — с пословной подсветкой и «прыжком»)."""
 from __future__ import annotations
 
+import unicodedata
 from pathlib import Path
 
 from subtitles.align import Word
@@ -54,16 +55,27 @@ def _ass_color(hex_rgb: str) -> str:
     return f"&H00{b}{g}{r}".upper()
 
 
-_QUOTES = str.maketrans("", "", "«»\"„“”")
+def _strip_punctuation(text: str) -> str:
+    """Все знаки препинания (категория Unicode P*) убираются; дефис внутри слова («кто-то») остаётся.
+    Заодно уходят служебные для ASS { } и \\."""
+    return "".join(
+        c for i, c in enumerate(text)
+        if not unicodedata.category(c).startswith("P")
+        or (c == "-" and 0 < i < len(text) - 1 and text[i - 1].isalnum() and text[i + 1].isalnum()))
 
 
 def _display(word: Word, uppercase: bool) -> str:
-    """Кавычки в титрах — визуальный мусор; фигурные скобки — служебные в ASS."""
-    text = word.text.translate(_QUOTES).replace("{", "(").replace("}", ")")
+    text = _strip_punctuation(word.text)
     return text.upper() if uppercase else text
 
 
+def _visible(groups: list[list[Word]]) -> list[list[Word]]:
+    """Без слов, от которых после удаления пунктуации ничего не осталось (отдельное тире и т.п.)."""
+    return [g for g in ([w for w in group if _display(w, False)] for group in groups) if g]
+
+
 def write_srt(groups: list[list[Word]], path: Path, uppercase: bool = False) -> Path:
+    groups = _visible(groups)
     lines = []
     for i, group in enumerate(groups):
         lines += [str(i + 1), f"{_srt_time(group[0].start)} --> {_srt_time(_group_end(groups, i))}",
@@ -92,6 +104,7 @@ Style: Default,{st['font']},{st['size']},{_ass_color(st['color'])},{_ass_color(s
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     hl = _ass_color(st["highlight_color"])
+    groups = _visible(groups)
     events = []
     for gi, group in enumerate(groups):
         group_end = _group_end(groups, gi)
