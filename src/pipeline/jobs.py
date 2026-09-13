@@ -125,20 +125,23 @@ def ui_render(payload: dict, cfg: dict) -> dict:
     from imessage import record_scene
     path = _scene_file(payload)
     scene = load_scene(path)
-    out = record_scene(scene, cfg, work_dir(cfg, scene) / "ui.mp4")
+    out = record_scene(scene, cfg, work_dir(cfg, scene) / "ui.mov")
     return {"ui_video": rel_path(out)}
 
 
 def video_render(payload: dict, cfg: dict) -> dict:
     from compositor import pick_background, scene_duration_s
+    from pipeline.manifest import record as record_manifest
     from renderer import render_scene
     path = _scene_file(payload)
     scene = load_scene(path)
     if "background" not in scene:
         scene["background"] = pick_background(cfg, round(scene_duration_s(scene, cfg) * 1000))
         save_scene(scene, path)
-    ui = work_dir(cfg, scene) / "ui.mp4" if scene["type"] == "imessage_drama" else None
-    return render_scene(scene, cfg, ui_video=ui)
+    ui = work_dir(cfg, scene) / "ui.mov" if scene["type"] == "imessage_drama" else None
+    result = render_scene(scene, cfg, ui_video=ui)
+    record_manifest(cfg, scene, result)
+    return result
 
 
 def video_clip_extraction(payload: dict, cfg: dict) -> dict:
