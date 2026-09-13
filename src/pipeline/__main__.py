@@ -1,8 +1,7 @@
 """Оркестратор: ставит конвейеры в очередь и выполняет их.
 
-    venv\\Scripts\\python -m pipeline story --mock                 # история из mock-data → mp4
+    venv\\Scripts\\python -m pipeline story --scrape 3              # спарсить форумы (Reddit + Pikabu), взять 3 лучших
     venv\\Scripts\\python -m pipeline story --post data/forum-posts/reddit_xxx.json
-    venv\\Scripts\\python -m pipeline story --scrape 3              # спарсить форумы, взять 3 лучших
     venv\\Scripts\\python -m pipeline drama [--topic "..."] [--count 2]
     venv\\Scripts\\python -m pipeline clips data/source-videos/film.mp4 [--limit 5] [--no-files]
     venv\\Scripts\\python -m pipeline worker [--watch]              # выполнить очередь
@@ -18,11 +17,9 @@ import sys
 import warnings
 from pathlib import Path
 
-from core.config import ROOT, load_config
+from core.config import load_config
 from core.scene import rel_path
 from pipeline.worker import open_queue, run_job, run_worker
-
-MOCK_POST = ROOT / "mock-data" / "forum-post.example.json"
 
 
 def _enqueue(cfg, kind: str, payloads: list[dict]) -> None:
@@ -34,14 +31,12 @@ def _enqueue(cfg, kind: str, payloads: list[dict]) -> None:
 
 def cmd_story(args, cfg) -> list[dict]:
     posts: list[Path] = list(args.post or [])
-    if args.mock:
-        posts.append(MOCK_POST)
     if args.scrape:
         from scraper import pending_posts, scrape
         scrape(cfg)
         posts += pending_posts(cfg)[:args.scrape]
     if not posts:
-        raise SystemExit("Нет постов: укажите --post, --mock или --scrape N")
+        raise SystemExit("Нет постов: укажите --post <файл> или --scrape N (Reddit + Pikabu)")
     return [{"post": rel_path(p)} for p in posts]
 
 
@@ -67,8 +62,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("story", help="истории с форумов")
     p.add_argument("--post", type=Path, action="append", help="JSON поста (можно несколько)")
-    p.add_argument("--mock", action="store_true", help="пост из mock-data")
-    p.add_argument("--scrape", type=int, metavar="N", help="спарсить форумы и взять N лучших постов")
+    p.add_argument("--scrape", type=int, metavar="N", help="спарсить форумы (Reddit + Pikabu) и взять N лучших постов")
     p.add_argument("--no-run", action="store_true")
 
     p = sub.add_parser("drama", help="iMessage-драмы")

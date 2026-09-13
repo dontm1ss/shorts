@@ -7,7 +7,6 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from core.config import ROOT
 from core.scene import SceneError, scene_errors
 from subtitles import Word
 from tts import TTSEngine, plausible_duration, resolve_voice, split_into_chunks, synthesize_scene
@@ -62,7 +61,7 @@ class FakeEngine(TTSEngine):
 
 
 def mock_scene(name):
-    return json.loads((ROOT / "mock-data" / f"scene.{name}.json").read_text(encoding="utf-8"))
+    return json.loads((Path(__file__).parent / "fixtures" / f"scene.{name}.json").read_text(encoding="utf-8"))
 
 
 # --- куски текста -----------------------------------------------------------------

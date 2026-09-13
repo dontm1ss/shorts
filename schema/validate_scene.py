@@ -1,7 +1,7 @@
 """Проверка JSON-сцен по schema/scene.schema.json.
 
 Использование:
-    venv\\Scripts\\python schema/validate_scene.py mock-data/scene.reddit_story.json ...
+    venv\\Scripts\\python schema/validate_scene.py tests/fixtures/scene.reddit_story.json ...
 """
 import json
 import sys

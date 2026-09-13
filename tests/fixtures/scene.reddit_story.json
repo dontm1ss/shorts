@@ -16,11 +16,11 @@
   ],
   "meta": { "title": "Табличка", "genders": { "narrator": "male" } },
   "audio": {
-    "path": "mock-data/audio/reddit_story.wav",
+    "path": "tests/fixtures/reddit_story.wav",
     "duration_ms": 54000,
     "tts_params": { "exaggeration": 0.5, "cfg_weight": 0.5, "temperature": 0.8 }
   },
-  "subtitles": { "path": "mock-data/subs/reddit_story.ass", "format": "ass" },
+  "subtitles": { "path": "tests/fixtures/reddit_story.ass", "format": "ass" },
   "background": { "type": "parkour_minecraft", "source_path": "parkur.mp4", "start_ms": 120000 },
   "output": { "resolution": "1080x1920", "path": "output/reddit_story_3f1c2a8e.mp4" }
 }

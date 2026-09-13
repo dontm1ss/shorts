@@ -1,6 +1,6 @@
 """CLI TTS-модуля. Запускается отдельным процессом (tts-stack-spec, раздел 1).
 
-    venv\\Scripts\\python -m tts scene mock-data/scene.reddit_story.json [--preset calm]
+    venv\\Scripts\\python -m tts scene tests/fixtures/scene.reddit_story.json [--preset calm]
     venv\\Scripts\\python -m tts say "Текст для озвучки" [--preset energetic] [--voice voices/a.wav]
     venv\\Scripts\\python -m tts presets "Текст для сравнения пресетов на слух"
 """
