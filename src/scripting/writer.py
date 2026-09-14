@@ -108,11 +108,22 @@ def adapt_story(post: dict, client: DeepSeekClient, cfg: dict) -> dict:
     return story
 
 
+def invent_story(client: DeepSeekClient, cfg: dict, topic: str | None = None) -> dict:
+    """История от первого лица, которую DeepSeek придумывает сам целиком (без поста-оригинала)."""
+    story_params = params.story_params(cfg)
+    system = prompts.STORY_SYSTEM.format(
+        **_limits(cfg), variety=params.format_story_variety(story_params, topic=topic, invented=True))
+    user = prompts.STORY_USER_TOPIC.format(topic=topic) if topic else prompts.STORY_USER_FREE
+    story = _check_story(client.chat_json(system, user))
+    params.record_story(cfg, story["text"], story_params)
+    return story
+
+
 def generate_drama(client: DeepSeekClient, cfg: dict, topic: str | None = None) -> dict:
     drama_params = params.drama_params(cfg)
     limits = _limits(cfg, _EST_DRAMA_MESSAGES)
     system = prompts.DRAMA_SYSTEM.format(**limits, min_messages=DRAMA_MESSAGES[0], max_messages=DRAMA_MESSAGES[1],
-                                         variety=params.format_drama_variety(drama_params))
+                                         variety=params.format_drama_variety(drama_params, topic))
     user = prompts.DRAMA_USER_TOPIC.format(topic=topic) if topic else prompts.DRAMA_USER_FREE
     drama = _check_drama(client.chat_json(system, user))
     if drama["messages"]:
@@ -137,6 +148,7 @@ def adjust_story(story: dict, current_s: float, client: DeepSeekClient, cfg: dic
     target_words = _ask_words(current_words, current_s, target_s)
     system = prompts.ADJUST_STORY_SYSTEM.format(direction=_direction(current_s, target_s),
                                                 target_words=target_words, current_words=current_words,
+                                                style_reminder=prompts.STYLE_REMINDER,
                                                 format_rules=prompts.FORMAT_RULES)
     return _check_story(client.chat_json(system, f"Заголовок: {story['title']}\n\n{story['text']}", 0.7))
 
@@ -150,6 +162,7 @@ def adjust_drama(drama: dict, current_s: float, client: DeepSeekClient, cfg: dic
     target_words = _ask_words(current_words, speech_now, speech_target)
     system = prompts.ADJUST_DRAMA_SYSTEM.format(direction=_direction(current_s, target_s),
                                                 target_words=target_words, current_words=current_words,
+                                                style_reminder=prompts.STYLE_REMINDER,
                                                 format_rules=prompts.FORMAT_RULES)
     return _check_drama(client.chat_json(system, json.dumps(drama, ensure_ascii=False), 0.7))
 
@@ -165,11 +178,11 @@ def _new_scene(scene_type: str, cfg: dict) -> dict:
                        "path": rel_path(video_path(cfg, scene_type, scene_id))}}
 
 
-def story_scene(story: dict, cfg: dict, source: dict | None = None) -> dict:
+def story_scene(story: dict, cfg: dict, source: dict | None = None, topic: str | None = None) -> dict:
     scene = _new_scene("reddit_story", cfg)
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", story["text"]) if p.strip()]
     scene["script"] = [{"speaker": "narrator", "text": " ".join(p.split())} for p in paragraphs]
-    scene["meta"] = {"title": story["title"], "source": source or {},
+    scene["meta"] = {"title": story["title"], "source": source or {"source": "deepseek"}, "topic": topic or "",
                      "genders": _genders({"narrator": story.get("gender")})}
     return validate_scene(scene)
 
@@ -204,7 +217,7 @@ def rewrite_scene_length(scene: dict, current_s: float, client: DeepSeekClient, 
                           scene.get("meta", {}).get("topic"))
     else:
         new = story_scene(adjust_story(scene_story(scene), current_s, client, cfg), cfg,
-                          scene.get("meta", {}).get("source"))
+                          scene.get("meta", {}).get("source"), scene.get("meta", {}).get("topic"))
     new.update(scene_id=scene["scene_id"], created_at=scene["created_at"], output=scene["output"])
     # пол героев не меняется при переписывании — голос озвучки остаётся тем же
     new["meta"]["genders"] = {**new["meta"].get("genders", {}), **scene.get("meta", {}).get("genders", {})}

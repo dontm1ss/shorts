@@ -25,17 +25,66 @@ from core.config import ROOT
 HISTORY_LEN = 8     # сколько последних генераций каждого формата помнить (для подсказки «не так, как здесь»)
 AVOID_LAST = 4      # на столько последних генераций не повторять один и тот же вариант параметра
 
-VARIETY_RULES = """\
-1. Не копируй структуру предыдущих историй.
-2. Не повторяй одинаковую завязку.
-3. Не используй одинаковый порядок развития событий.
-4. Не начинай постоянно с конфликта.
-5. Не используй одинаковые фразы.
-6. Не используй одинаковые типы персонажей.
-7. Не заканчивай истории одинаковым способом.
-8. Добавь минимум 2 неожиданных изменения ситуации.
-9. Диалог должен выглядеть естественно.
-10. Каждый персонаж должен иметь собственную манеру общения."""
+# Правила стиля — в промптах владельца (prompts.STORY_SYSTEM / DRAMA_SYSTEM). Здесь — конкретные
+# параметры каждого текста, выбранные случайно: модель не помнит прошлых генераций, и без этого
+# «каждая новая генерация должна отличаться от предыдущих» ей нечем выполнить.
+
+# --- режимы «иногда» из правил владельца ------------------------------------------
+# На текст берутся два режима из РАЗНЫХ групп: внутри группы режимы противоречат друг другу.
+MODE_GROUPS = [
+    [   # эмоциональная дуга
+        "первые секунды — серьёзно, потом ситуация постепенно превращается в полный пиздец",
+        "начинается как комедия, а заканчивается неожиданно серьёзно",
+    ],
+    [   # кто виноват
+        "оба персонажа — долбоёбы",
+        "один персонаж очевидно неправ",
+        "неправы оба",
+    ],
+    [   # причина конфликта
+        "конфликт возникает из-за абсолютно идиотской причины",
+        "причина конфликта оказывается неожиданно серьёзной",
+    ],
+    [   # устройство сюжета
+        "зритель думает, что понял ситуацию, — и получает ещё один поворот",
+        "самый незначительный персонаж оказывается главным элементом сюжета",
+        "случайная деталь из самого начала становится ключом к финалу",
+    ],
+]
+MODES = [m for group in MODE_GROUPS for m in group]
+
+# Финал — из правил владельца; последняя реплика должна давать «блять, вот это поворот»
+FINALES = [
+    "максимально смешной", "абсурдный", "неожиданно логичный", "жёсткий", "нелепый", "открытый",
+    "внезапно серьёзный", "такой, после которого хочется пересмотреть начало",
+]
+
+# «Меняй порядок раскрытия информации»
+REVEALS = [
+    "главное скрыто до последней реплики",
+    "зритель с самого начала знает больше, чем один из героев",
+    "правда всплывает кусками, и каждый кусок меняет картину",
+    "сначала результат, потом — как до этого дошло",
+    "ложный след: первые подсказки ведут совсем не туда",
+    "ключевая деталь проскакивает мимоходом в начале и выстреливает в конце",
+]
+
+# «Меняй ритм»
+RHYTHMS_STORY = [
+    "короткие рубленые фразы",
+    "длинные сбивчивые предложения, которые обрываются на полуслове",
+    "спокойный рассказ с внезапными резкими фразами",
+    "быстрый темп, будто рассказывает на бегу",
+    "паузы и недосказанность, а потом — резкий разгон",
+]
+RHYTHMS_DRAMA = [
+    "быстрые короткие сообщения очередями",
+    "медленный разгон и резкое ускорение ближе к концу",
+    "один пишет длинно, по десять-пятнадцать слов, другой отвечает односложно",
+    "рваный ритм: паузы, короткие и длинные сообщения вперемешку",
+    "спокойная переписка, которая взрывается одним сообщением",
+]
+TWIST_COUNTS = (1, 2, 3)   # «меняй количество поворотов»
 
 # --- пулы вариантов (истории от первого лица) ------------------------------------
 
@@ -54,12 +103,6 @@ TONES_STORY = [
     "сухой сарказм", "самоирония", "тревожно и сбивчиво, будто выговаривается",
     "спокойно и отстранённо, будто пересказывает чужую историю", "на грани срыва, очень эмоционально",
     "чёрный юмор", "устало и разочарованно", "тепло, с ноткой ностальгии",
-]
-
-ENDINGS_STORY = [
-    "на итоге без морали — пусть слушатель сам решает, кто прав",
-    "ироничной деталью", "коротким выводом рассказчика", "открытым вопросом к себе",
-    "неожиданной фразой другого персонажа", "тем, что изменилось после",
 ]
 
 # --- пулы вариантов (переписка iMessage) ------------------------------------------
@@ -115,18 +158,6 @@ TWISTS = [
     "прошлое решение одного из героев неожиданно аукается именно сейчас",
 ]
 
-ENDINGS_DRAMA = [
-    "жёсткий разрыв без примирения",
-    "неожиданное примирение вопреки всему",
-    "открытый финал — неясно, чем всё закончится",
-    "ирония судьбы: герой получает то, чего добивался, но не рад",
-    "герой уходит из разговора, оставив только короткое сообщение",
-    "чёрный юмор в последней реплике",
-    "герой блокирует собеседника",
-    "признание, которое всё меняет, но уже поздно",
-]
-
-
 def _history_file(cfg: dict) -> Path:
     return ROOT / cfg["paths"]["scripting_history"]
 
@@ -155,8 +186,27 @@ def _pick(pool: list[str], recent: list[str], n: int = 1) -> list[str]:
 
 
 def _recent(cfg: dict, kind: str, key: str, limit: int = AVOID_LAST) -> list[str]:
-    hist = _load_history(cfg).get(kind, [])[-limit:]
-    return [h["params"][key] for h in hist if key in h.get("params", {})]
+    """Недавние значения параметра; списочные параметры (modes, twists) — развёрнутые."""
+    values = []
+    for h in _load_history(cfg).get(kind, [])[-limit:]:
+        value = h.get("params", {}).get(key)
+        values += value if isinstance(value, list) else [value] if value else []
+    return values
+
+
+def _pick_modes(recent: list[str], n: int = 2) -> list[str]:
+    """n режимов «иногда» из разных групп (внутри группы режимы противоречат друг другу)."""
+    return [_pick(group, recent)[0] for group in random.sample(MODE_GROUPS, n)]
+
+
+def _common_params(cfg: dict, kind: str, rhythms: list[str]) -> dict:
+    return {
+        "modes": _pick_modes(_recent(cfg, kind, "modes")),
+        "rhythm": _pick(rhythms, _recent(cfg, kind, "rhythm"))[0],
+        "reveal": _pick(REVEALS, _recent(cfg, kind, "reveal"))[0],
+        "finale": _pick(FINALES, _recent(cfg, kind, "finale"))[0],
+        "recent_hooks": _recent_hooks(cfg, kind),
+    }
 
 
 def _recent_hooks(cfg: dict, kind: str) -> list[str]:
@@ -168,8 +218,9 @@ def story_params(cfg: dict) -> dict:
     return {
         "opening": _pick(OPENINGS_STORY, _recent(cfg, "reddit_story", "opening"))[0],
         "tone": _pick(TONES_STORY, _recent(cfg, "reddit_story", "tone"))[0],
-        "ending": _pick(ENDINGS_STORY, _recent(cfg, "reddit_story", "ending"))[0],
-        "recent_hooks": _recent_hooks(cfg, "reddit_story"),
+        "conflict": _pick(CONFLICT_DOMAINS, _recent(cfg, "reddit_story", "conflict"))[0],
+        "archetype": _pick(ARCHETYPES, _recent(cfg, "reddit_story", "archetype"))[0],
+        **_common_params(cfg, "reddit_story", RHYTHMS_STORY),
     }
 
 
@@ -179,44 +230,54 @@ def drama_params(cfg: dict) -> dict:
     recent_speech = _recent(cfg, "imessage_drama", "speech_a") + _recent(cfg, "imessage_drama", "speech_b")
     archetype_a, archetype_b = _pick(ARCHETYPES, recent_archetypes, n=2)
     speech_a, speech_b = _pick(SPEECH_MANNERS, recent_speech, n=2)
-    twist_1, twist_2 = _pick(TWISTS, [], n=2)
     return {
         "opening": _pick(OPENINGS_DRAMA, _recent(cfg, "imessage_drama", "opening"))[0],
         "conflict": _pick(CONFLICT_DOMAINS, _recent(cfg, "imessage_drama", "conflict"))[0],
         "archetype_a": archetype_a, "archetype_b": archetype_b,
         "speech_a": speech_a, "speech_b": speech_b,
-        "twist_1": twist_1, "twist_2": twist_2,
-        "ending": _pick(ENDINGS_DRAMA, _recent(cfg, "imessage_drama", "ending"))[0],
-        "recent_hooks": _recent_hooks(cfg, "imessage_drama"),
+        "twists": _pick(TWISTS, _recent(cfg, "imessage_drama", "twists"), n=random.choice(TWIST_COUNTS)),
+        **_common_params(cfg, "imessage_drama", RHYTHMS_DRAMA),
     }
 
 
 def _format_variety_block(params: dict, extra_lines: list[str]) -> str:
-    lines = "\n".join(f"- {line}" for line in extra_lines)
-    block = f"Разнообразие — обязательно, не как в предыдущих генерациях:\n{VARIETY_RULES}\n\nПараметры именно этого текста:\n{lines}"
+    lines = "\n".join(f"- {line}" for line in extra_lines + [
+        f"Ритм: {params['rhythm']}.",
+        f"Порядок раскрытия информации: {params['reveal']}.",
+        f"Режимы этого текста (из «иногда»): {'; '.join(params['modes'])}.",
+        f"Финал: {params['finale']}. Последняя реплика — самая сильная.",
+    ])
+    block = f"Параметры именно этого текста (у каждой генерации свои):\n{lines}"
     if params["recent_hooks"]:
         hooks = "\n".join(f"- «{h}»" for h in params["recent_hooks"])
         block += f"\n\nНе начинай так же, как эти прошлые тексты (другие слова, другая завязка):\n{hooks}"
     return block
 
 
-def format_story_variety(params: dict) -> str:
-    return _format_variety_block(params, [
-        f"Как начать: {params['opening']}.",
-        f"Тон рассказчика: {params['tone']}.",
-        f"Как закончить: {params['ending']}.",
-    ])
+def format_story_variety(params: dict, topic: str | None = None, invented: bool = False) -> str:
+    """invented — историю придумывает DeepSeek (без поста): добавляются тема конфликта (если тему
+    не задал пользователь) и характер второго главного героя."""
+    lines = [f"Как начать: {params['opening']}.", f"Тон рассказчика: {params['tone']}."]
+    if invented:
+        if not topic:
+            lines.append(f"Тема конфликта: {params['conflict']}.")
+        lines.append(f"Второй главный персонаж: {params['archetype']}.")
+    return _format_variety_block(params, lines)
 
 
-def format_drama_variety(params: dict) -> str:
-    return _format_variety_block(params, [
-        f"Как начать: {params['opening']}.",
-        f"Тема конфликта: {params['conflict']}.",
+def format_drama_variety(params: dict, topic: str | None = None) -> str:
+    """topic — тема от пользователя: тогда случайная «тема конфликта» не подставляется, чтобы не спорить с ней."""
+    twists = params["twists"]
+    lines = [f"Как начать: {params['opening']}."]
+    if not topic:
+        lines.append(f"Тема конфликта: {params['conflict']}.")
+    lines += [
         f"Персонаж A: {params['archetype_a']}; манера речи — {params['speech_a']}.",
         f"Персонаж B: {params['archetype_b']}; манера речи — {params['speech_b']}.",
-        f"Два неожиданных поворота по ходу истории (используй оба): {params['twist_1']}; {params['twist_2']}.",
-        f"Как закончить: {params['ending']}.",
-    ])
+        (f"Поворот по ходу истории: {twists[0]}." if len(twists) == 1 else
+         f"Повороты по ходу истории ({len(twists)}, используй все): {'; '.join(twists)}."),
+    ]
+    return _format_variety_block(params, lines)
 
 
 def _hook(text: str) -> str:

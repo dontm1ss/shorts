@@ -56,6 +56,25 @@
     return isNaN(d) ? iso : d.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
   }
 
+  // Время очереди — локальное время ПК без часового пояса: сегодня — ЧЧ:ММ:СС, иначе с датой
+  function fmtClock(iso) {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    if (isNaN(d)) return iso;
+    const time = d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    return d.toDateString() === new Date().toDateString()
+      ? time : d.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" }) + " " + time;
+  }
+
+  // Длительность: завершённая — от старта до конца; идущая — от старта до сейчас
+  function duration(job) {
+    if (!job.started_at || job.status === "pending") return "—";
+    const end = job.status === "running" ? new Date() : new Date(job.finished_at);
+    const s = Math.max(0, Math.round((end - new Date(job.started_at)) / 1000));
+    if (isNaN(s)) return "—";
+    return s < 60 ? `${s} с` : s < 3600 ? `${Math.floor(s / 60)} мин ${s % 60} с` : `${Math.floor(s / 3600)} ч ${Math.floor(s / 60) % 60} мин`;
+  }
+
   function estimate(texts) {
     // та же оценка, что scripting.estimate_duration_s
     const words = texts.reduce((n, t) => n + (t.match(WORD) || []).length, 0);
@@ -91,6 +110,7 @@
         : "обработчик остановлен";
       $("#worker-start").hidden = s.worker_running;
       const key = JSON.stringify([s.review, s.queue]);
+      if (tab === "queue" && lastSummary !== "") renderQueue();   // время «Длилась» у идущей задачи тикает
       if (key !== lastSummary) {
         const first = lastSummary === "";
         lastSummary = key;
@@ -229,10 +249,14 @@
       el("td", { text: "#" + j.id }),
       el("td", { text: j.kind }),
       el("td", { class: "st-" + j.status, text: STATUS_LABEL[j.status] || j.status }),
-      el("td", { text: fmtTime(j.finished_at || j.created_at) }),
+      el("td", { class: "time", text: fmtClock(j.created_at) }),
+      el("td", { class: "time", text: j.status === "pending" ? "—" : fmtClock(j.started_at) }),
+      el("td", { class: "time", text: j.status === "running" || j.status === "pending" ? "—" : fmtClock(j.finished_at) }),
+      el("td", { class: "time", text: duration(j) }),
       el("td", { class: "err", text: j.error || "" })));
     content.replaceChildren(el("div", { class: "table-wrap" }, el("table", { class: "jobs" },
-      el("thead", {}, el("tr", {}, ["Задача", "Этап", "Статус", "Время", ""].map((h) => el("th", { text: h })))),
+      el("thead", {}, el("tr", {}, ["Задача", "Этап", "Статус", "В очереди", "Начата", "Завершена", "Длилась", ""]
+        .map((h) => el("th", { text: h })))),
       el("tbody", {}, rows))));
   }
 

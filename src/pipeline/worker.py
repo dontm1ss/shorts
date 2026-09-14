@@ -22,6 +22,11 @@ log = logging.getLogger(__name__)
 
 BATCH_KINDS = {"tts_synthesis"}
 
+# Windows: задача получает скрытую консоль. Иначе у воркера без консоли (запуск из панели)
+# каждая задача открывала своё окно — закроешь его, и озвучка падает
+# («forrtl: error (200): program aborting due to window-CLOSE event»).
+NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+
 
 def open_queue(cfg: dict) -> JobQueue:
     return JobQueue(ROOT / cfg["queue"]["db"], cfg["queue"]["max_attempts"])
@@ -51,7 +56,7 @@ def _run_subprocess(jobs: list[Job], cfg: dict) -> dict[int, tuple[bool, dict, s
         batch = f", пачка {', '.join(f'#{j.id}' for j in jobs)}" if len(jobs) > 1 else ""
         fh.write(f"\n=== попытка {jobs[0].attempts}{batch}, {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
         proc = subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                text=True, encoding="utf-8", errors="replace")
+                                text=True, encoding="utf-8", errors="replace", creationflags=NO_WINDOW)
         for line in proc.stdout:
             fh.write(line)
             line = line.rstrip()

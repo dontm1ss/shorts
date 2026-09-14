@@ -1,7 +1,7 @@
 """Оркестратор: ставит конвейеры в очередь и выполняет их.
 
-    venv\\Scripts\\python -m pipeline story --scrape 3              # спарсить форумы (Reddit + Pikabu), взять 3 лучших
-    venv\\Scripts\\python -m pipeline story --post data/forum-posts/reddit_xxx.json
+    venv\\Scripts\\python -m pipeline story --count 3 [--topic "..."]   # DeepSeek придумывает истории сам
+    venv\\Scripts\\python -m pipeline story --post data/forum-posts/reddit_xxx.json   # пересказ поста (старый путь)
     venv\\Scripts\\python -m pipeline drama [--topic "..."] [--count 2]
     venv\\Scripts\\python -m pipeline clips data/source-videos/film.mp4 [--limit 5] [--no-files]
     venv\\Scripts\\python -m pipeline worker [--watch]              # выполнить очередь
@@ -30,14 +30,15 @@ def _enqueue(cfg, kind: str, payloads: list[dict]) -> None:
 
 
 def cmd_story(args, cfg) -> list[dict]:
+    """По умолчанию DeepSeek придумывает истории сам; --post / --scrape — пересказ постов с форумов."""
     posts: list[Path] = list(args.post or [])
     if args.scrape:
         from scraper import pending_posts, scrape
         scrape(cfg)
         posts += pending_posts(cfg)[:args.scrape]
-    if not posts:
-        raise SystemExit("Нет постов: укажите --post <файл> или --scrape N (Reddit + Pikabu)")
-    return [{"post": rel_path(p)} for p in posts]
+    if posts:
+        return [{"post": rel_path(p)} for p in posts]
+    return [{"topic": args.topic} for _ in range(args.count)]
 
 
 def cmd_status(args, cfg) -> int:
@@ -60,8 +61,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--profile")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("story", help="истории с форумов")
-    p.add_argument("--post", type=Path, action="append", help="JSON поста (можно несколько)")
+    p = sub.add_parser("story", help="истории: DeepSeek придумывает сам")
+    p.add_argument("--count", type=int, default=1, help="сколько историй придумать")
+    p.add_argument("--topic", help="тема (необязательно)")
+    p.add_argument("--post", type=Path, action="append", help="пересказать пост с форума (JSON, старый путь)")
     p.add_argument("--scrape", type=int, metavar="N", help="спарсить форумы (Reddit + Pikabu) и взять N лучших постов")
     p.add_argument("--no-run", action="store_true")
 

@@ -2,8 +2,8 @@
 
 Конвейер «от сырых данных до готового mp4» для трёх форматов вертикальных видео (9:16, 1080×1920):
 
-- **Истории с форумов** — пост Reddit → адаптация на русский под 50–60 с (DeepSeek) → озвучка
-  Chatterbox → крупные субтитры с пословной подсветкой → паркур на весь кадр.
+- **Истории** — DeepSeek сам придумывает историю от первого лица под 50–60 с (тема — по желанию)
+  → озвучка Chatterbox → крупные субтитры с пословной подсветкой → фоновое видео на весь кадр.
 - **iMessage-драма** — переписка по ролям (DeepSeek) → озвучка → покадровая запись переписки
   в стиле iMessage (только сообщения: пузыри, «печатает…», «Прочитано») → переписка сверху, паркур снизу.
 - **Нарезка клипов** — собственные видео режутся окном 30 с с шагом 2 с → субтитры по звуку →
@@ -21,12 +21,12 @@ powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
 Затем `DEEPSEEK_API_KEY` в `.env` (шаблон — `.env.example`) и `parkur.mp4` в корень репозитория —
 это фон по умолчанию из пула `[[backgrounds]]` в `config/base.toml`; туда же добавляются
 дополнительные фоновые видео (выбор случайный на каждую сцену).
-Источники историй: Pikabu — без ключей (общая RSS-лента); Reddit — без ключей тоже работает
-(RSS с жёстким лимитом запросов), для официального API нужны ключи приложения типа «script»
-(`REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET` в `.env`).
+Истории и переписки DeepSeek придумывает сам — источники не нужны. Стиль задают правила
+«дикого разнообразия» в `src/scripting/prompts.py` и случайные параметры каждой генерации
+(`src/scripting/params.py`).
 
 ```bash
-venv\Scripts\python -m pipeline story --scrape 1
+venv\Scripts\python -m panel
 ```
 
 Готовые ролики — в `output/videos/`.
@@ -53,8 +53,8 @@ powershell -ExecutionPolicy Bypass -File scripts\panel_online.ps1 # то же + 
 (`--no-run` — только поставить).
 
 ```bash
-venv\Scripts\python -m pipeline story --scrape 3                 # спарсить Reddit + Pikabu, взять 3 лучших поста
-venv\Scripts\python -m pipeline story --post data\forum-posts\reddit_xxx.json
+venv\Scripts\python -m pipeline story --count 3 --topic "сосед сверху"   # DeepSeek придумывает истории
+venv\Scripts\python -m pipeline story --post data\forum-posts\reddit_xxx.json   # пересказ поста (старый путь)
 venv\Scripts\python -m pipeline drama --topic "подруга слила переписку" --count 2
 venv\Scripts\python -m pipeline clips data\source-videos\film.mp4 --limit 5
 venv\Scripts\python -m pipeline worker [--watch]                 # выполнить очередь
@@ -64,8 +64,7 @@ venv\Scripts\python -m pipeline retry 12                         # повтор�
 
 | Задача | Что делает |
 |---|---|
-| `script_batch` | N историй: лучшие неиспользованные посты, при нехватке — сначала парсинг форумов |
-| `script_story` | DeepSeek адаптирует пост → на отбор в панель (или сразу в работу без отбора) |
+| `script_story` | DeepSeek придумывает историю (или пересказывает пост, если он задан) → на отбор в панель |
 | `script_drama` | DeepSeek пишет переписку A/B |
 | `tts_synthesis` | озвучка; все готовые задачи — пачкой в одном процессе (модель грузится один раз) |
 | `subtitle_generation` | таймкоды из проверки озвучки (клипы — из одного распознавания исходника) → ASS/SRT; шрифт и цвет подсветки свои у каждой сцены |

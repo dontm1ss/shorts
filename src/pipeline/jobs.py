@@ -83,15 +83,21 @@ def _prefit(scene: dict, cfg: dict, client) -> dict:
 
 
 def script_story(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dict:
-    from scraper.store import mark_processed
-    from scripting import DeepSeekClient, adapt_story, story_scene
-    post = json.loads(abs_path(payload["post"]).read_text(encoding="utf-8"))
+    """История. Основной путь — DeepSeek придумывает её сам (payload: topic — необязательно).
+    С payload["post"] — пересказ поста с форума (старый путь, --post / --scrape)."""
+    from scripting import DeepSeekClient, adapt_story, invent_story, story_scene
     client = DeepSeekClient(cfg)
-    story = adapt_story(post, client, cfg)
-    scene = _prefit(story_scene(story, cfg, {k: post.get(k) for k in ("id", "source", "url", "title")}),
-                    cfg, client)
+    if "post" in payload:
+        from scraper.store import mark_processed
+        post = json.loads(abs_path(payload["post"]).read_text(encoding="utf-8"))
+        scene = story_scene(adapt_story(post, client, cfg), cfg,
+                            {k: post.get(k) for k in ("id", "source", "url", "title")})
+        mark_processed(cfg, post["id"])
+    else:
+        topic = (payload.get("topic") or "").strip() or None
+        scene = story_scene(invent_story(client, cfg, topic), cfg, topic=topic)
+    scene = _prefit(scene, cfg, client)
     path = scene_path(cfg, scene["scene_id"])
-    mark_processed(cfg, post["id"])
     log.info("История «%s» → %s", scene["meta"]["title"], rel_path(path))
     return _after_script(scene, path, cfg)
 

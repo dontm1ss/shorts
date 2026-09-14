@@ -3,7 +3,7 @@ import pytest
 
 from core.scene import scene_errors
 from scripting import (DeepSeekClient, DeepSeekError, ScriptError, adapt_story, drama_scene,
-                       estimate_duration_s, generate_drama, rewrite_scene_length, story_scene,
+                       estimate_duration_s, generate_drama, invent_story, rewrite_scene_length, story_scene,
                        word_budget, word_count)
 
 
@@ -38,7 +38,7 @@ def test_adapt_story_prompt_and_result(dev_cfg):
     client = FakeClient(STORY)
     story = adapt_story({"title": "Neighbor", "text": "He parked in my spot."}, client, dev_cfg)
     system, user = client.calls[0]
-    assert "169–203 слов" in system and "50–60 секунд" in system and "словами" in system
+    assert "169–203 слова" in system and "словами" in system
     assert '"gender"' in system                                          # пол рассказчика — для голоса
     assert "He parked in my spot." in user
     assert story == STORY
@@ -104,6 +104,42 @@ def test_rewrite_drama_direction(dev_cfg):
     client = FakeClient(DRAMA)
     rewrite_scene_length(scene, current_s=75.0, client=client, cfg=dev_cfg)
     assert "сократи" in client.calls[0][0]
+
+
+def test_invent_story_without_post(dev_cfg):
+    """Основной путь: историю DeepSeek придумывает сам — без поста-оригинала."""
+    client = FakeClient(STORY)
+    story = invent_story(client, dev_cfg)
+    system, user = client.calls[0]
+    assert "превращать исходный материал" in system and "НЕПРЕДСКАЗУЕМОСТЬ" in system
+    assert "Тема конфликта" in system and "Второй главный персонаж" in system
+    assert user.startswith("Исходного материала нет")
+    assert story["text"] == STORY["text"]
+
+    client = FakeClient(STORY)
+    invent_story(client, dev_cfg, topic="сосед сверху")
+    system, user = client.calls[0]
+    assert "сосед сверху" in user and "Тема конфликта" not in system   # не спорит с темой
+
+
+def test_invented_story_scene_keeps_topic(dev_cfg):
+    scene = story_scene(STORY, dev_cfg, topic="сосед сверху")
+    assert scene["meta"]["topic"] == "сосед сверху" and scene["meta"]["source"] == {"source": "deepseek"}
+    longer = {"title": "Т", "gender": "male", "text": STORY["text"] + "\n\nЕщё абзац."}
+    new = rewrite_scene_length(scene, current_s=30.0, client=FakeClient(longer), cfg=dev_cfg)
+    assert new["meta"]["topic"] == "сосед сверху"
+
+
+def test_script_story_job_invents(dev_cfg, tmp_path, monkeypatch):
+    import scripting
+    from pipeline import jobs
+    from core.scene import load_scene
+    dev_cfg["paths"]["output"] = str(tmp_path / "out")
+    monkeypatch.setattr(scripting, "DeepSeekClient", lambda cfg: FakeClient(STORY, STORY, STORY))
+    monkeypatch.setattr(jobs, "_prefit", lambda scene, cfg, client: scene)
+    result = jobs.script_story({"topic": "  соседи  "}, dev_cfg)
+    scene = load_scene(tmp_path / "out" / "scenes" / (result["scene"].rsplit("/", 1)[-1]))
+    assert result["review"] == "pending" and scene["meta"]["topic"] == "соседи"
 
 
 def test_client_requires_key(dev_cfg):

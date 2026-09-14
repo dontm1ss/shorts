@@ -221,6 +221,7 @@ main { max-width: 900px; margin: 0 auto; padding: 4px 12px 40px; display: grid; 
 .jobs .st-failed, .jobs .st-cancelled { color: var(--bad); }
 .jobs .st-running { color: var(--accent); font-weight: 600; }
 .jobs .err { color: var(--bad); font-size: 12px; word-break: break-word; }
+.jobs .time { white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--muted); }
 .table-wrap { overflow-x: auto; }
 
 @media (max-width: 520px) {

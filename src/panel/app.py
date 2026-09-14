@@ -76,7 +76,9 @@ def start_worker(cfg: dict) -> bool:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1",
            "SHORTS_PROFILE": cfg["profile"]["name"]}
-    kwargs = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS}
+    # Windows: своя скрытая консоль (CREATE_NO_WINDOW), а не отсутствие консоли (DETACHED_PROCESS) —
+    # иначе дочерние задачи воркера открывали бы видимые окна; своя группа — не падать вместе с панелью
+    kwargs = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
               if sys.platform == "win32" else {"start_new_session": True})
     with open(log_path, "a", encoding="utf-8") as fh:
         subprocess.Popen([sys.executable, "-m", "pipeline", "worker", "--watch"], cwd=ROOT, env=env,
@@ -185,10 +187,10 @@ def create_app(cfg: dict) -> FastAPI:
         count = max(1, min(body.count, 20))
         queue = open_queue(cfg)
         try:
+            topic = (body.topic or "").strip() or None
             if body.kind == "story":
-                ids = [queue.enqueue("script_batch", {"count": count})]
+                ids = [queue.enqueue("script_story", {"topic": topic}) for _ in range(count)]
             elif body.kind == "drama":
-                topic = (body.topic or "").strip() or None
                 ids = [queue.enqueue("script_drama", {"topic": topic}) for _ in range(count)]
             else:
                 raise HTTPException(status_code=400, detail="kind: story | drama")
@@ -207,7 +209,7 @@ def create_app(cfg: dict) -> FastAPI:
         for j in reversed(queue.jobs(limit=60)):
             error_lines = (j.error or "").strip().splitlines()
             items.append({"id": j.id, "kind": j.kind, "status": j.status, "attempts": j.attempts,
-                          "created_at": j.created_at, "finished_at": j.finished_at,
+                          "created_at": j.created_at, "started_at": j.started_at, "finished_at": j.finished_at,
                           "error": error_lines[-1] if error_lines else ""})
         queue.close()
         return items

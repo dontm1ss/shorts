@@ -114,13 +114,30 @@ def test_api_review_flow(cfg):
 
 def test_api_generate_clamps_count(cfg):
     client = TestClient(panel.app.create_app(cfg))
-    r = client.post("/api/generate", json={"kind": "story", "count": 100}, headers={"X-Panel": "1"})
+    r = client.post("/api/generate", json={"kind": "story", "count": 100, "topic": " соседи "},
+                    headers={"X-Panel": "1"})
     queue = open_queue(cfg)
-    assert queue.get(r.json()["jobs"][0]).payload == {"count": 20}
+    jobs = [queue.get(i) for i in r.json()["jobs"]]
+    assert len(jobs) == 20                                                   # не больше 20 за раз
+    assert {j.kind for j in jobs} == {"script_story"} and jobs[0].payload == {"topic": "соседи"}
     queue.close()
     r = client.post("/api/generate", json={"kind": "drama", "count": 2, "topic": "  "}, headers={"X-Panel": "1"})
     assert len(r.json()["jobs"]) == 2
     assert client.post("/api/generate", json={"kind": "x"}, headers={"X-Panel": "1"}).status_code == 400
+
+
+def test_api_jobs_have_timestamps(cfg):
+    client = TestClient(panel.app.create_app(cfg))
+    queue = open_queue(cfg)
+    done_id, running_id, pending_id = (queue.enqueue("tts_synthesis", {}) for _ in range(3))
+    queue.claim_next()
+    queue.complete(done_id)
+    queue.claim_next()
+    queue.close()
+    jobs = {j["id"]: j for j in client.get("/api/jobs").json()}
+    assert all(jobs[done_id][k] for k in ("created_at", "started_at", "finished_at"))
+    assert jobs[running_id]["started_at"] and not jobs[running_id]["finished_at"]
+    assert not jobs[pending_id]["started_at"]
 
 
 def test_api_password(cfg):
