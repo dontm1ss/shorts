@@ -25,6 +25,10 @@
             "description": "narrator — диктор; A, B, C… — роли переписки"
           },
           "text": { "type": "string", "minLength": 1 },
+          "emotion": {
+            "enum": ["neutral", "anger", "sad", "sarcasm", "anxious", "shock", "joy", "tired", "warm", "guilty"],
+            "description": "интонация реплики (размечает DeepSeek, src/core/emotions.py): озвучка берёт референс voices/<пол>/<эмоция>.wav и поправку подачи tts.emotions; нет поля — neutral"
+          },
           "stressed_text": { "type": "string", "description": "текст с ударениями (U+0301), заполняет TTS-модуль" },
           "timestamp_ms": { "type": "integer", "minimum": 0, "description": "начало реплики в общем аудио" },
           "duration_ms": { "type": "integer", "minimum": 0, "description": "длительность реплики в общем аудио, заполняет TTS-модуль" }

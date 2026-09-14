@@ -28,17 +28,25 @@ Chatterbox копирует из референса не только тембр
    даже на злости — злость в интонации, а не в децибелах).
 6. Формат любой (wav/mp3, mono/stereo) — модель сама пересэмплирует. Сохранять как wav.
 
-Раскладка файлов (wav в git не попадают — `*.wav` в `.gitignore`):
+Раскладка файлов — 10 женских и 10 мужских, имена строго такие (записи в git не попадают —
+`voices/.gitignore`; подробности — [voices/README.md](../voices/README.md)):
 
 ```
-voices/male/neutral.wav      voices/female/neutral.wav
-voices/male/anger.wav        voices/female/anger.wav
-...
+voices/female/neutral.wav   voices/male/neutral.wav    1. нейтрально
+voices/female/anger.wav     voices/male/anger.wav      2. злость
+voices/female/sad.wav       voices/male/sad.wav        3. обида / грусть
+voices/female/sarcasm.wav   voices/male/sarcasm.wav    4. сарказм
+voices/female/anxious.wav   voices/male/anxious.wav    5. тревога / паника
+voices/female/shock.wav     voices/male/shock.wav      6. шок / удивление
+voices/female/joy.wav       voices/male/joy.wav        7. радость
+voices/female/tired.wav     voices/male/tired.wav      8. усталость / разочарование
+voices/female/warm.wav      voices/male/warm.wav       9. тепло / нежность
+voices/female/guilty.wav    voices/male/guilty.wav     10. оправдание / вина
 ```
 
-Сейчас конвейер берёт **один** голос на пол — `tts.voices.male` / `tts.voices.female`
-в `config/base.toml`. Туда ставим `neutral.wav`. Остальные эмоции пригодятся, когда реплики
-сценария получат метку эмоции (см. конец файла).
+DeepSeek помечает эмоцией каждую реплику (в историях — каждый фрагмент рассказа), озвучка
+берёт запись этой эмоции для пола героя (`tts.voices.female` / `tts.voices.male` в
+`config/base.toml` — папки `voices/female`, `voices/male`). Нет записи — `neutral.wav`.
 
 ---
 
@@ -127,16 +135,24 @@ voices/male/anger.wav        voices/female/anger.wav
 ## Как проверить запись
 
 ```
-venv\Scripts\python -m tts say "Короче, ты не поверишь, что сегодня случилось на работе." --voice voices/male/neutral.wav
-venv\Scripts\python -m tts presets "Короче, ты не поверишь, что сегодня случилось на работе." --voice voices/male/neutral.wav
+venv\Scripts\python -m tts voices                                          # все ли 20 записей на месте
+venv\Scripts\python -m tts emotions "Короче, ты не поверишь, что сегодня случилось на работе." --gender male
+venv\Scripts\python -m tts say "Нет, ты серьёзно сейчас?" --gender female --emotion anger
 ```
 
+`voices` показывает, каких записей не хватает, их длину, тишину в начале и перегруз.
+`emotions` озвучивает одну фразу всеми 10 эмоциями → `output/tts/emotions/<пол>/<эмоция>.wav`.
+
 Если синтез звучит «плоско» — перезаписать живее. Если мямлит или глотает слова — референс
-слишком шумный или в начале тишина/вздох дольше полсекунды.
+слишком шумный. Тишину по краям и разную громкость записей озвучка выравнивает сама.
 
-## Следующий шаг (пока не сделан)
+## Как это работает в конвейере (сделано 2026-09-14)
 
-Чтобы эмоциональные записи реально использовались, сценарист (DeepSeek) должен помечать каждую
-реплику эмоцией (`emotion` в `script[]` сцены), а TTS — выбирать референс `voices/<пол>/<эмоция>.wav`
-с запасным `neutral.wav`, и подстраивать `exaggeration` под эмоцию (злость/паника/радость — выше,
-грусть/усталость/тепло — ниже).
+- DeepSeek ставит каждой реплике `emotion` (`script[]` сцены, список — `src/core/emotions.py`).
+  Истории он режет на фрагменты по смене интонации; прямая речь героя с другой интонацией —
+  отдельный фрагмент.
+- В панели отбора у каждой реплики — выпадающий список эмоции, её можно поправить до одобрения.
+- Озвучка: запись `voices/<пол героя>/<эмоция>.wav` → `neutral.wav` → любая запись из папки →
+  встроенный голос. Плюс небольшая поправка подачи к пресету (`[tts.emotions]` в
+  `config/base.toml`): злость/паника/шок/радость — `exaggeration` выше, грусть/усталость/тепло —
+  ниже и медленнее. Значения стартовые — подобрать на слух командой `emotions`.

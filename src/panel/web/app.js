@@ -9,6 +9,7 @@
 
   let tab = "pending";
   let timing = null;
+  let emotions = [];   // [{id, label}] — интонации озвучки (core/emotions.py)
   let lastSummary = "";
 
   const $ = (sel) => document.querySelector(sel);
@@ -99,6 +100,7 @@
     try {
       const s = await api("/api/summary");
       timing = s.timing;
+      emotions = s.emotions || [];
       $("#n-pending").textContent = s.review.pending || "";
       $("#n-rejected").textContent = s.review.rejected || "";
       const active = (s.queue.pending || 0) + (s.queue.running || 0);
@@ -124,8 +126,21 @@
 
   // --- на проверке -------------------------------------------------------------
 
+  // Интонация реплики: по ней озвучка берёт запись голоса с этой эмоцией
+  function emotionSelect(line, onEdit) {
+    const sel = el("select", { class: "emo", title: "интонация озвучки", onchange: () => {
+      sel.dataset.emotion = sel.value;
+      onEdit();
+    } });
+    for (const e of emotions) sel.append(el("option", { value: e.id, text: e.label }));
+    sel.value = line.emotion || "neutral";
+    sel.dataset.emotion = sel.value;
+    return sel;
+  }
+
   function sceneCard(scene) {
     const texts = () => [...card.querySelectorAll("textarea")].map((t) => t.value);
+    const lineEmotions = () => [...card.querySelectorAll("select.emo")].map((s) => s.value);
     let badge = durationBadge(estimate(scene.script.map((l) => l.text)).seconds);
     const words = el("span", { text: `${scene.words} слов` });
     const onEdit = () => {
@@ -155,21 +170,23 @@
         ta.value = line.text;
         requestAnimationFrame(() => autosize(ta));
         const who = (scene.contacts && scene.contacts[line.speaker]) || line.speaker;
-        return el("div", { class: "msg " + (right ? "right" : "left") }, el("span", { class: "who", text: who }), ta);
+        return el("div", { class: "msg " + (right ? "right" : "left") },
+          el("div", { class: "msg-head" }, el("span", { class: "who", text: who }), emotionSelect(line, onEdit)), ta);
       }));
     } else {
       body = el("div", { class: "card-body" }, scene.script.map((line) => {
         const ta = el("textarea", { class: "para", oninput: (e) => { autosize(e.target); onEdit(); } });
         ta.value = line.text;
         requestAnimationFrame(() => autosize(ta));
-        return ta;
+        return el("div", { class: "part" }, emotionSelect(line, onEdit), ta);
       }));
     }
 
     const approveBtn = el("button", { text: "Одобрить", onclick: async () => {
       approveBtn.disabled = rejectBtn.disabled = true;
       try {
-        const r = await api(`/api/scenes/${scene.scene_id}/approve`, { method: "POST", body: { texts: texts() } });
+        const r = await api(`/api/scenes/${scene.scene_id}/approve`,
+          { method: "POST", body: { texts: texts(), emotions: lineEmotions() } });
         toast(`В работе: задачи ${r.jobs.map((j) => "#" + j).join(", ")}${r.worker_started ? " — обработчик запущен" : ""}`);
         card.remove();
         refreshSummary();
@@ -189,7 +206,7 @@
       el("div", { class: "card-head" }, el("div", { class: "card-title", text: scene.title || "Без названия" }), meta),
       body,
       el("div", { class: "card-foot" },
-        el("span", { class: "hint", text: "правки сохраняются при одобрении; пустой абзац — удаляется" }),
+        el("span", { class: "hint", text: "правки и интонации сохраняются при одобрении; пустой абзац — удаляется" }),
         rejectBtn, approveBtn));
     return card;
   }

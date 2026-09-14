@@ -10,6 +10,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 
+from core.emotions import DEFAULT as DEFAULT_EMOTION, normalize_emotion
 from core.scene import rel_path, validate_scene, video_path
 from scripting import params, prompts
 from scripting.client import DeepSeekClient
@@ -17,6 +18,7 @@ from scripting.client import DeepSeekClient
 _WORD = re.compile(r"[^\W\d_]+(?:-[^\W\d_]+)*|\d+")
 DRAMA_MESSAGES = (14, 26)
 _EST_DRAMA_MESSAGES = 20
+_EST_STORY_PARTS = 8     # история режется на фрагменты по интонации — между ними паузы, как между репликами
 _GENDER_ALIASES = {"female": "female", "f": "female", "woman": "female", "женский": "female", "ж": "female",
                    "male": "male", "m": "male", "man": "male", "мужской": "male", "м": "male"}
 
@@ -66,11 +68,32 @@ def _limits(cfg: dict, messages: int = 1) -> dict:
 
 # --- проверка ответов -----------------------------------------------------------
 
+def _paragraphs(text: str) -> list[str]:
+    return [" ".join(p.split()) for p in re.split(r"\n\s*\n", text) if p.strip()]
+
+
+def _story_parts(data: dict) -> list[dict]:
+    """Фрагменты истории [{emotion, text}]. Без parts (старый формат: только text) — абзацы
+    с нейтральной интонацией."""
+    raw = data.get("parts")
+    if isinstance(raw, list):
+        parts = []
+        for item in raw:
+            item = item if isinstance(item, dict) else {"text": item}
+            text = " ".join(str(item.get("text") or "").split())
+            if text:
+                parts.append({"emotion": normalize_emotion(item.get("emotion")), "text": text})
+        return parts
+    text = data.get("text")
+    return [{"emotion": DEFAULT_EMOTION, "text": p} for p in _paragraphs(text)] if isinstance(text, str) else []
+
+
 def _check_story(data: dict) -> dict:
-    if not isinstance(data.get("text"), str) or not data["text"].strip():
+    parts = _story_parts(data)
+    if not parts:
         raise ScriptError(f"DeepSeek вернул историю без текста: {str(data)[:200]}")
     return {"title": str(data.get("title", "")).strip()[:80], "gender": normalize_gender(data.get("gender")),
-            "text": data["text"].strip()}
+            "parts": parts, "text": "\n\n".join(p["text"] for p in parts)}
 
 
 def _check_drama(data: dict) -> dict:
@@ -84,7 +107,7 @@ def _check_drama(data: dict) -> dict:
         if speaker not in ("A", "B"):
             raise ScriptError(f"Неизвестный отправитель {speaker!r} в сообщении {m}")
         if text:
-            clean.append({"speaker": speaker, "text": text})
+            clean.append({"speaker": speaker, "emotion": normalize_emotion(m.get("emotion")), "text": text})
     contacts = data.get("contacts") or {}
     return {"title": str(data.get("title", "")).strip()[:80],
             "contacts": {"A": str(contacts.get("A") or "Контакт"), "B": str(contacts.get("B") or "Я")},
@@ -101,7 +124,8 @@ def adapt_story(post: dict, client: DeepSeekClient, cfg: dict) -> dict:
     чтобы истории не выходили однотипными — DeepSeek просто пересказывает суть поста,
     а не изобретает структуру сам."""
     story_params = params.story_params(cfg)
-    system = prompts.STORY_SYSTEM.format(**_limits(cfg), variety=params.format_story_variety(story_params))
+    system = prompts.STORY_SYSTEM.format(**_limits(cfg, _EST_STORY_PARTS), emotions=prompts.STORY_EMOTION_RULES,
+                                         variety=params.format_story_variety(story_params))
     user = prompts.STORY_USER.format(title=post.get("title", ""), text=post["text"][:12000])
     story = _check_story(client.chat_json(system, user))
     params.record_story(cfg, story["text"], story_params)
@@ -112,7 +136,8 @@ def invent_story(client: DeepSeekClient, cfg: dict, topic: str | None = None) ->
     """История от первого лица, которую DeepSeek придумывает сам целиком (без поста-оригинала)."""
     story_params = params.story_params(cfg)
     system = prompts.STORY_SYSTEM.format(
-        **_limits(cfg), variety=params.format_story_variety(story_params, topic=topic, invented=True))
+        **_limits(cfg, _EST_STORY_PARTS), emotions=prompts.STORY_EMOTION_RULES,
+        variety=params.format_story_variety(story_params, topic=topic, invented=True))
     user = prompts.STORY_USER_TOPIC.format(topic=topic) if topic else prompts.STORY_USER_FREE
     story = _check_story(client.chat_json(system, user))
     params.record_story(cfg, story["text"], story_params)
@@ -123,7 +148,8 @@ def generate_drama(client: DeepSeekClient, cfg: dict, topic: str | None = None) 
     drama_params = params.drama_params(cfg)
     limits = _limits(cfg, _EST_DRAMA_MESSAGES)
     system = prompts.DRAMA_SYSTEM.format(**limits, min_messages=DRAMA_MESSAGES[0], max_messages=DRAMA_MESSAGES[1],
-                                         variety=params.format_drama_variety(drama_params, topic))
+                                         variety=params.format_drama_variety(drama_params, topic),
+                                         emotions=prompts.DRAMA_EMOTION_RULES)
     user = prompts.DRAMA_USER_TOPIC.format(topic=topic) if topic else prompts.DRAMA_USER_FREE
     drama = _check_drama(client.chat_json(system, user))
     if drama["messages"]:
@@ -149,8 +175,10 @@ def adjust_story(story: dict, current_s: float, client: DeepSeekClient, cfg: dic
     system = prompts.ADJUST_STORY_SYSTEM.format(direction=_direction(current_s, target_s),
                                                 target_words=target_words, current_words=current_words,
                                                 style_reminder=prompts.STYLE_REMINDER,
-                                                format_rules=prompts.FORMAT_RULES)
-    return _check_story(client.chat_json(system, f"Заголовок: {story['title']}\n\n{story['text']}", 0.7))
+                                                format_rules=prompts.FORMAT_RULES,
+                                                emotion_rule=prompts.ADJUST_EMOTION_RULE.format(unit="фрагмента"))
+    user = json.dumps({"title": story["title"], "parts": story["parts"]}, ensure_ascii=False)
+    return _check_story(client.chat_json(system, user, 0.7))
 
 
 def adjust_drama(drama: dict, current_s: float, client: DeepSeekClient, cfg: dict) -> dict:
@@ -163,7 +191,8 @@ def adjust_drama(drama: dict, current_s: float, client: DeepSeekClient, cfg: dic
     system = prompts.ADJUST_DRAMA_SYSTEM.format(direction=_direction(current_s, target_s),
                                                 target_words=target_words, current_words=current_words,
                                                 style_reminder=prompts.STYLE_REMINDER,
-                                                format_rules=prompts.FORMAT_RULES)
+                                                format_rules=prompts.FORMAT_RULES,
+                                                emotion_rule=prompts.ADJUST_EMOTION_RULE.format(unit="сообщения"))
     return _check_drama(client.chat_json(system, json.dumps(drama, ensure_ascii=False), 0.7))
 
 
@@ -180,8 +209,8 @@ def _new_scene(scene_type: str, cfg: dict) -> dict:
 
 def story_scene(story: dict, cfg: dict, source: dict | None = None, topic: str | None = None) -> dict:
     scene = _new_scene("reddit_story", cfg)
-    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", story["text"]) if p.strip()]
-    scene["script"] = [{"speaker": "narrator", "text": " ".join(p.split())} for p in paragraphs]
+    scene["script"] = [{"speaker": "narrator", "emotion": p["emotion"], "text": p["text"]}
+                       for p in _story_parts(story)]
     scene["meta"] = {"title": story["title"], "source": source or {"source": "deepseek"}, "topic": topic or "",
                      "genders": _genders({"narrator": story.get("gender")})}
     return validate_scene(scene)
@@ -189,7 +218,8 @@ def story_scene(story: dict, cfg: dict, source: dict | None = None, topic: str |
 
 def drama_scene(drama: dict, cfg: dict, topic: str | None = None) -> dict:
     scene = _new_scene("imessage_drama", cfg)
-    scene["script"] = [{"speaker": m["speaker"], "text": m["text"]} for m in drama["messages"]]
+    scene["script"] = [{"speaker": m["speaker"], "emotion": normalize_emotion(m.get("emotion")), "text": m["text"]}
+                       for m in drama["messages"]]
     scene["meta"] = {"title": drama["title"], "contacts": drama["contacts"], "topic": topic or "",
                      "genders": _genders(drama.get("genders"))}
     return validate_scene(scene)
@@ -198,15 +228,17 @@ def drama_scene(drama: dict, cfg: dict, topic: str | None = None) -> dict:
 def scene_story(scene: dict) -> dict:
     """Обратно из сцены — для переписывания под хронометраж."""
     meta = scene.get("meta", {})
+    parts = [{"emotion": line.get("emotion", DEFAULT_EMOTION), "text": line["text"]} for line in scene["script"]]
     return {"title": meta.get("title", ""), "gender": meta.get("genders", {}).get("narrator"),
-            "text": "\n\n".join(line["text"] for line in scene["script"])}
+            "parts": parts, "text": "\n\n".join(p["text"] for p in parts)}
 
 
 def scene_drama(scene: dict) -> dict:
     meta = scene.get("meta", {})
     return {"title": meta.get("title", ""), "contacts": meta.get("contacts", {"A": "Контакт", "B": "Я"}),
             "genders": meta.get("genders", {}),
-            "messages": [{"speaker": l["speaker"], "text": l["text"]} for l in scene["script"]]}
+            "messages": [{"speaker": l["speaker"], "emotion": l.get("emotion", DEFAULT_EMOTION), "text": l["text"]}
+                         for l in scene["script"]]}
 
 
 def rewrite_scene_length(scene: dict, current_s: float, client: DeepSeekClient, cfg: dict) -> dict:

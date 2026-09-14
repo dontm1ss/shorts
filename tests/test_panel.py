@@ -75,6 +75,13 @@ def test_edit_approve_reject_restore(cfg):
     assert load_scene(scene_path(cfg, sid))["meta"]["review"]["status"] == "approved"
 
     other = make_scene(cfg)["scene_id"]
+    edited = set_texts(cfg, other, ["Раз.", "Два."], ["anger", "neutral"])
+    assert [l["emotion"] for l in edited["script"]] == ["anger", "neutral"]
+    assert set_texts(cfg, other, ["Раз.", "Два!"])["script"][0]["emotion"] == "anger"   # без emotions — как было
+    with pytest.raises(ReviewError, match="эмоция"):
+        set_texts(cfg, other, ["Раз.", "Два."], ["anger", "ярость"])
+    with pytest.raises(ReviewError, match="эмоций"):
+        set_texts(cfg, other, ["Раз.", "Два."], ["anger"])
     reject(cfg, other)
     with pytest.raises(ReviewError):
         set_texts(cfg, other, ["x", "y"])                                    # отклонённый не правится
@@ -102,12 +109,20 @@ def test_api_review_flow(cfg):
     scene = make_scene(cfg, kind="imessage_drama")
     cards = client.get("/api/scenes?status=pending").json()
     assert cards[0]["contacts"]["A"] == "Лена" and cards[0]["words"] == 10 and cards[0]["est_s"] > 0
+    assert [l["emotion"] for l in cards[0]["script"]] == ["neutral", "neutral"]   # старая сцена без эмоций
+    emotions = client.get("/api/summary").json()["emotions"]
+    assert emotions[0] == {"id": "neutral", "label": "нейтрально"} and len(emotions) == 10
 
     url = f"/api/scenes/{scene['scene_id']}/approve"
-    assert client.post(url, json={"texts": ["Ты думала, я не узнаю?", "О чём ты?"]}).status_code == 403   # без X-Panel
-    r = client.post(url, json={"texts": ["Ты думала, я не узнаю?", "О чём ты?"]}, headers={"X-Panel": "1"})
+    body = {"texts": ["Ты думала, я не узнаю?", "О чём ты?"], "emotions": ["sarcasm", "shock"]}
+    assert client.post(url, json=body).status_code == 403                                           # без X-Panel
+    bad = client.post(url, json={**body, "emotions": ["sarcasm", "ярость"]}, headers={"X-Panel": "1"})
+    assert bad.status_code == 400 and "ярость" in bad.json()["detail"]
+    r = client.post(url, json=body, headers={"X-Panel": "1"})
     assert r.status_code == 200 and len(r.json()["jobs"]) == 3
-    assert load_scene(scene_path(cfg, scene["scene_id"]))["script"][0]["text"] == "Ты думала, я не узнаю?"
+    saved = load_scene(scene_path(cfg, scene["scene_id"]))["script"]
+    assert saved[0]["text"] == "Ты думала, я не узнаю?"
+    assert [l["emotion"] for l in saved] == ["sarcasm", "shock"]
     assert client.post(url, headers={"X-Panel": "1"}).status_code == 400                           # уже одобрен
     assert client.get("/api/summary").json()["review"]["approved"] == 1
 

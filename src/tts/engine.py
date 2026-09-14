@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import gc
+import io
 import logging
 import re
 from difflib import SequenceMatcher
@@ -118,11 +119,36 @@ class TTSEngine:
         import torch
         torch.manual_seed(seed)
 
+    def reference_audio(self, voice: Path) -> io.BytesIO:
+        """Запись-референс для prepare_conditionals: без тишины по краям (интонацию модель берёт
+        из первых 6 с, тембр — из первых 10 с; тишина в начале их съедает) и с одной громкостью
+        у всех записей (как prepare_conditionals у Chatterbox Turbo, −27 LUFS) — иначе реплики
+        разных эмоций звучат то тише, то громче."""
+        import librosa
+        import soundfile as sf
+
+        wav, sr = librosa.load(voice, sr=None, mono=True)
+        _, (start, end) = librosa.effects.trim(wav, top_db=self.tts_cfg["trim_top_db"])
+        margin = int(0.05 * sr)
+        wav = wav[max(0, start - margin):min(len(wav), end + margin)] if end > start else wav
+        try:
+            import pyloudnorm
+            loudness = pyloudnorm.Meter(sr).integrated_loudness(wav)
+            if np.isfinite(loudness):
+                wav = np.clip(wav * 10 ** ((-27 - loudness) / 20), -1.0, 1.0)
+        except (ImportError, ValueError):   # запись короче 0.4 с — оставить как есть
+            pass
+        buf = io.BytesIO()
+        sf.write(buf, wav.astype(np.float32), sr, format="WAV", subtype="FLOAT")
+        buf.seek(0)
+        return buf
+
     def _use_voice(self, voice: Path | None, exaggeration: float) -> None:
         model = self.model
         key = str(voice) if voice else None
         if key not in self._voices:
-            model.prepare_conditionals(key, exaggeration=exaggeration)
+            log.info("Референс голоса: %s", voice)
+            model.prepare_conditionals(self.reference_audio(voice), exaggeration=exaggeration)
             self._voices[key] = model.conds
         model.conds = self._voices[key]
 

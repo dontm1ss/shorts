@@ -18,9 +18,14 @@ class FakeClient:
 
 
 STORY = {"title": "Табличка", "gender": "male",
-         "text": "Три года сосед занимал моё место.\n\nЯ повесил табличку. Он сдался."}
+         "parts": [{"emotion": "neutral", "text": "Три года сосед занимал моё место."},
+                   {"emotion": "злость", "text": "Я повесил  табличку."},
+                   {"emotion": "joy", "text": "Он сдался."}]}
+# Старый формат ответа — только текст абзацами, без эмоций
+OLD_STORY = {"title": "Табличка", "gender": "male",
+             "text": "Три года сосед занимал моё место.\n\nЯ повесил табличку. Он сдался."}
 DRAMA = {"title": "Скрин", "contacts": {"A": "Лена", "B": "Я"}, "genders": {"A": "Ж", "B": "female", "C": "male"},
-         "messages": [{"speaker": "a", "text": "Ты правда думала, что я не узнаю?"},
+         "messages": [{"speaker": "a", "emotion": "Angry", "text": "Ты правда думала, что я не узнаю?"},
                       {"speaker": "B", "text": "О чём ты?"}, {"speaker": "A", "text": "  "}]}
 
 
@@ -38,10 +43,37 @@ def test_adapt_story_prompt_and_result(dev_cfg):
     client = FakeClient(STORY)
     story = adapt_story({"title": "Neighbor", "text": "He parked in my spot."}, client, dev_cfg)
     system, user = client.calls[0]
-    assert "169–203 слова" in system and "словами" in system
+    assert "154–188 слова" in system and "словами" in system             # бюджет с паузами между фрагментами
     assert '"gender"' in system                                          # пол рассказчика — для голоса
+    assert '"parts"' in system and "- anger — злость" in system          # интонация фрагментов для озвучки
     assert "He parked in my spot." in user
-    assert story == STORY
+    assert [p["emotion"] for p in story["parts"]] == ["neutral", "anger", "joy"]   # «злость» → anger
+    assert story["text"] == "Три года сосед занимал моё место.\n\nЯ повесил табличку.\n\nОн сдался."
+
+
+def test_story_old_format_is_neutral(dev_cfg):
+    story = adapt_story({"title": "", "text": "x"}, FakeClient(OLD_STORY), dev_cfg)
+    assert [p["emotion"] for p in story["parts"]] == ["neutral", "neutral"]     # абзацы без эмоций
+    assert story["text"] == OLD_STORY["text"]
+
+
+@pytest.mark.parametrize("raw, emotion", [("anger", "anger"), ("ANGER", "anger"), ("злость", "anger"),
+                                          ("surprised", "shock"), ("восторг", "joy"), ("???", "neutral"),
+                                          (None, "neutral")])
+def test_normalize_emotion(raw, emotion):
+    from core.emotions import normalize_emotion
+    assert normalize_emotion(raw) == emotion
+
+
+def test_emotions_match_schema_and_config(dev_cfg):
+    """Список эмоций один: core.emotions = enum схемы = имена записей = tts.emotions."""
+    import json
+    from core.emotions import EMOTIONS
+    from core.scene import SCHEMA_PATH
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    assert schema["properties"]["script"]["items"]["properties"]["emotion"]["enum"] == list(EMOTIONS)
+    assert list(dev_cfg["tts"]["emotions"]) == list(EMOTIONS)
+    assert all(set(v) <= {"exaggeration", "cfg_weight", "temperature"} for v in dev_cfg["tts"]["emotions"].values())
 
 
 @pytest.mark.parametrize("raw, gender", [("male", "male"), ("Женский", "female"), ("ж", "female"),
@@ -55,25 +87,34 @@ def test_story_gender_normalized(dev_cfg, raw, gender):
 
 
 def test_adapt_story_rejects_empty(dev_cfg):
-    with pytest.raises(ScriptError):
-        adapt_story({"title": "", "text": "x"}, FakeClient({"title": "t", "text": " "}), dev_cfg)
+    for empty in ({"title": "t", "text": " "}, {"title": "t", "parts": [{"emotion": "anger", "text": " "}]}):
+        with pytest.raises(ScriptError):
+            adapt_story({"title": "", "text": "x"}, FakeClient(empty), dev_cfg)
 
 
 def test_story_scene(dev_cfg):
     scene = story_scene(STORY, dev_cfg, {"id": "reddit:abc"})
     assert scene_errors(scene) == []
-    assert [l["speaker"] for l in scene["script"]] == ["narrator", "narrator"]   # абзац — реплика
+    assert [l["speaker"] for l in scene["script"]] == ["narrator"] * 3           # фрагмент — реплика
+    assert [l["emotion"] for l in scene["script"]] == ["neutral", "anger", "joy"]
+    assert scene["script"][1]["text"] == "Я повесил табличку."
     assert scene["meta"]["source"]["id"] == "reddit:abc"
     assert scene["output"]["path"].startswith("output/videos/reddit_story_")
+    old = story_scene(OLD_STORY, dev_cfg)                                          # абзац — реплика
+    assert [(l["emotion"], l["text"]) for l in old["script"]] == [
+        ("neutral", "Три года сосед занимал моё место."), ("neutral", "Я повесил табличку. Он сдался.")]
 
 
 def test_drama_normalized(dev_cfg):
     client = FakeClient(DRAMA)
     drama = generate_drama(client, dev_cfg, topic="измена")
     assert "Тема истории: измена" in client.calls[0][1]
+    assert '"emotion"' in client.calls[0][0] and "- sarcasm — сарказм" in client.calls[0][0]
     assert [m["speaker"] for m in drama["messages"]] == ["A", "B"]      # регистр исправлен, пустое убрано
+    assert [m["emotion"] for m in drama["messages"]] == ["anger", "neutral"]   # «Angry» → anger, нет — neutral
     scene = drama_scene(drama, dev_cfg)
     assert scene_errors(scene) == [] and scene["meta"]["contacts"]["A"] == "Лена"
+    assert [l["emotion"] for l in scene["script"]] == ["anger", "neutral"]
     assert scene["meta"]["genders"] == {"A": "female", "B": "female"}     # «Ж» распознан, чужая роль C убрана
 
 
@@ -90,20 +131,24 @@ def test_estimate_duration(dev_cfg):
 
 def test_rewrite_keeps_identity(dev_cfg):
     scene = story_scene(STORY, dev_cfg)
-    longer = {"title": "Табличка", "text": STORY["text"] + "\n\nИ ещё абзац."}
+    longer = {"title": "Табличка", "parts": STORY["parts"] + [{"emotion": "shock", "text": "И ещё абзац."}]}
     client = FakeClient(longer)
     new = rewrite_scene_length(scene, current_s=30.0, client=client, cfg=dev_cfg)
     assert new["scene_id"] == scene["scene_id"] and new["output"] == scene["output"]
-    assert len(new["script"]) == 3
-    assert "расширь" in client.calls[0][0]
+    assert [l["emotion"] for l in new["script"]] == ["neutral", "anger", "joy", "shock"]
+    system, user = client.calls[0]
+    assert "расширь" in system and '"emotion"' in system
+    assert '"emotion": "anger"' in user                        # редактор видит интонации фрагментов
     assert new["meta"]["genders"] == {"narrator": "male"}      # в ответе пола нет — остаётся прежний
 
 
 def test_rewrite_drama_direction(dev_cfg):
     scene = drama_scene(generate_drama(FakeClient(DRAMA), dev_cfg), dev_cfg)
     client = FakeClient(DRAMA)
-    rewrite_scene_length(scene, current_s=75.0, client=client, cfg=dev_cfg)
+    new = rewrite_scene_length(scene, current_s=75.0, client=client, cfg=dev_cfg)
     assert "сократи" in client.calls[0][0]
+    assert '"emotion": "anger"' in client.calls[0][1]
+    assert [l["emotion"] for l in new["script"]] == ["anger", "neutral"]
 
 
 def test_invent_story_without_post(dev_cfg):
@@ -114,7 +159,8 @@ def test_invent_story_without_post(dev_cfg):
     assert "превращать исходный материал" in system and "НЕПРЕДСКАЗУЕМОСТЬ" in system
     assert "Тема конфликта" in system and "Второй главный персонаж" in system
     assert user.startswith("Исходного материала нет")
-    assert story["text"] == STORY["text"]
+    assert "ИНТОНАЦИЯ ОЗВУЧКИ" in system
+    assert len(story["parts"]) == 3 and story["text"].startswith("Три года")
 
     client = FakeClient(STORY)
     invent_story(client, dev_cfg, topic="сосед сверху")
@@ -125,7 +171,7 @@ def test_invent_story_without_post(dev_cfg):
 def test_invented_story_scene_keeps_topic(dev_cfg):
     scene = story_scene(STORY, dev_cfg, topic="сосед сверху")
     assert scene["meta"]["topic"] == "сосед сверху" and scene["meta"]["source"] == {"source": "deepseek"}
-    longer = {"title": "Т", "gender": "male", "text": STORY["text"] + "\n\nЕщё абзац."}
+    longer = {"title": "Т", "gender": "male", "text": OLD_STORY["text"] + "\n\nЕщё абзац."}   # ответ без parts
     new = rewrite_scene_length(scene, current_s=30.0, client=FakeClient(longer), cfg=dev_cfg)
     assert new["meta"]["topic"] == "сосед сверху"
 

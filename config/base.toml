@@ -66,15 +66,35 @@ reddit_story = "neutral"
 imessage_drama = "neutral"
 video_clip = "neutral"
 
-# Референс-голоса: wav 5–15 с чистой речи, путь от корня репозитория.
+# Референс-голоса, путь от корня репозитория: папка с записями по эмоциям
+# (<эмоция>.wav — neutral, anger, sad, sarcasm, anxious, shock, joy, tired, warm, guilty;
+# docs/voice-phrases.md) или один wav на все эмоции.
 # Голос реплики: явный голос роли (narrator / A / B) → голос по полу героя (female / male;
 # пол определяет DeepSeek при написании сценария — meta.genders сцены) → встроенный голос Chatterbox.
+# Из папки берётся запись с эмоцией реплики (script[].emotion), нет её — neutral.wav, нет и его —
+# любая запись из папки. Проверить папки: venv\Scripts\python -m tts voices
 [tts.voices]
-female = ""
-male = ""
+female = "voices/female"
+male = "voices/male"
 narrator = ""
 A = ""
 B = ""
+
+# Поправки подачи по эмоции реплики — прибавляются к пресету формата (tts.presets).
+# Эмоцию несёт в первую очередь сама запись-референс, поэтому поправки небольшие: высокий
+# exaggeration по проверке whisper'ом искажает слова. Стартовые значения — уточнить на слух:
+#   venv\Scripts\python -m tts emotions "Фраза для сравнения" --gender male
+[tts.emotions]
+neutral = {}
+anger = { exaggeration = 0.15 }
+sad = { exaggeration = -0.1, cfg_weight = -0.1 }
+sarcasm = { exaggeration = 0.05, cfg_weight = -0.05 }
+anxious = { exaggeration = 0.15 }
+shock = { exaggeration = 0.15 }
+joy = { exaggeration = 0.15 }
+tired = { exaggeration = -0.15, cfg_weight = -0.1 }
+warm = { exaggeration = -0.1, cfg_weight = -0.05 }
+guilty = {}
 
 # Стартовые пресеты подачи (docs/tts-stack-spec.md, раздел 9) — уточняются в задаче 3
 [tts.presets.neutral]

@@ -1,0 +1,8 @@
+# Записи голосов — личные данные и тяжёлые файлы, в git не попадают (любой формат)
+*
+!.gitignore
+!README.md
+!female/
+!male/
+!female/.gitkeep
+!male/.gitkeep

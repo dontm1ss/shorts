@@ -20,6 +20,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 
 from core.config import ROOT
+from core.emotions import DEFAULT as DEFAULT_EMOTION, EMOTIONS
 from core.scene import output_dir
 from pipeline.queue import WorkerLock
 from pipeline.review import ReviewError, approve, list_scenes, reject, restore, set_texts
@@ -33,6 +34,7 @@ VIDEO_NAME = re.compile(r"^[\w.-]+\.mp4$")
 
 class TextsBody(BaseModel):
     texts: list[str]
+    emotions: list[str] | None = None
 
 
 class GenerateBody(BaseModel):
@@ -43,7 +45,8 @@ class GenerateBody(BaseModel):
 
 def scene_card(scene: dict, cfg: dict) -> dict:
     meta = scene.get("meta", {})
-    script = [{"speaker": line["speaker"], "text": line["text"]} for line in scene.get("script", [])]
+    script = [{"speaker": line["speaker"], "text": line["text"], "emotion": line.get("emotion", DEFAULT_EMOTION)}
+              for line in scene.get("script", [])]
     return {
         "scene_id": scene["scene_id"],
         "type": scene["type"],
@@ -141,6 +144,7 @@ def create_app(cfg: dict) -> FastAPI:
             "timing": {"wps": s["words_per_second"], "line_overhead_s": s["line_overhead_s"],
                        "pause_s": cfg["tts"]["pause_between_lines_ms"] / 1000,
                        "min_s": s["min_duration_s"], "max_s": s["max_duration_s"]},
+            "emotions": [{"id": key, "label": label} for key, (label, _) in EMOTIONS.items()],
         }
 
     @app.get("/api/scenes")
@@ -150,7 +154,7 @@ def create_app(cfg: dict) -> FastAPI:
     @app.put("/api/scenes/{scene_id}/script")
     def save_texts(scene_id: str, body: TextsBody):
         try:
-            return scene_card(set_texts(cfg, scene_id, body.texts), cfg)
+            return scene_card(set_texts(cfg, scene_id, body.texts, body.emotions), cfg)
         except ReviewError as e:
             fail(e)
 
@@ -158,7 +162,7 @@ def create_app(cfg: dict) -> FastAPI:
     def approve_scene(scene_id: str, body: TextsBody | None = None):
         try:
             if body is not None:
-                set_texts(cfg, scene_id, body.texts)
+                set_texts(cfg, scene_id, body.texts, body.emotions)
             queue = open_queue(cfg)
             try:
                 jobs = approve(cfg, scene_id, queue)

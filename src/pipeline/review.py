@@ -11,6 +11,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
+from core.emotions import DEFAULT as DEFAULT_EMOTION, EMOTIONS
 from core.scene import load_scene, output_dir, rel_path, save_scene, scene_path
 
 log = logging.getLogger(__name__)
@@ -69,15 +70,22 @@ def _load(cfg: dict, scene_id: str) -> tuple[dict, Path]:
     return load_scene(path), path
 
 
-def set_texts(cfg: dict, scene_id: str, texts: list[str]) -> dict:
-    """Правка текста реплик до озвучки. Пустой текст — реплика удаляется; роли не меняются."""
+def set_texts(cfg: dict, scene_id: str, texts: list[str], emotions: list[str] | None = None) -> dict:
+    """Правка текста и интонации (эмоции) реплик до озвучки. Пустой текст — реплика удаляется;
+    роли не меняются. emotions=None — эмоции остаются как были."""
     scene, path = _load(cfg, scene_id)
     if review_status(scene) != "pending":
         raise ReviewError("Править можно только сценарий, ожидающий решения")
     if len(texts) != len(scene["script"]):
         raise ReviewError(f"Ожидалось {len(scene['script'])} реплик, пришло {len(texts)}")
-    script = [{**line, "text": " ".join(text.split())} for line, text in zip(scene["script"], texts)
-              if text.strip()]
+    if emotions is None:
+        emotions = [line.get("emotion", DEFAULT_EMOTION) for line in scene["script"]]
+    if len(emotions) != len(texts):
+        raise ReviewError(f"Ожидалось {len(texts)} эмоций, пришло {len(emotions)}")
+    if unknown := sorted(set(emotions) - set(EMOTIONS)):
+        raise ReviewError(f"Неизвестная эмоция: {', '.join(unknown)}")
+    script = [{**line, "text": " ".join(text.split()), "emotion": emotion}
+              for line, text, emotion in zip(scene["script"], texts, emotions) if text.strip()]
     if not script:
         raise ReviewError("Сценарий не может быть пустым — отклоните его")
     scene["script"] = script

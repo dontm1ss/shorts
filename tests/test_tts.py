@@ -22,6 +22,7 @@ class FakeEngine(TTSEngine):
     def __init__(self, cfg, babble_attempts=0, junk_tail_s=0.0, garble_attempts=0):
         super().__init__(cfg)
         self.calls: list[tuple[str, Path | None]] = []
+        self.params: list[dict] = []
         self.seeds: list[int] = []
         self.babble_attempts = babble_attempts   # столько первых вызовов «бормочут» (×10 длиннее)
         self.garble_attempts = garble_attempts   # столько первых вызовов распознаются как мусор
@@ -41,6 +42,7 @@ class FakeEngine(TTSEngine):
 
     def _raw_generate(self, text, params, voice):
         self.calls.append((text, voice))
+        self.params.append(dict(params))
         self._text = text
         speech_s = sum(c.isalpha() for c in text) / LETTERS_PER_S
         if len(self.calls) <= self.babble_attempts:
@@ -213,6 +215,74 @@ def test_voices_by_gender(dev_cfg, tmp_path):
     engine = FakeEngine(dev_cfg)
     synthesize_scene(scene, engine, out_path=tmp_path / "o.wav")
     assert [v for _, v in engine.calls] == [male, female, male, female]   # A, B, A, B
+
+
+def _records(folder, *names):
+    folder.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        sf.write(folder / name, np.zeros(SR), SR, format="WAV" if name.endswith(".wav") else "FLAC")
+    return folder
+
+
+def test_emotion_reference_choice(tmp_path):
+    """Запись эмоции реплики → neutral → любая записанная эмоция → встроенный голос."""
+    from tts.scene import find_reference
+    full = _records(tmp_path / "male", "neutral.wav", "anger.flac")
+    voices = {"male": str(full), "female": str(tmp_path / "female"), "A": ""}
+    assert resolve_voice("A", voices, "male", "anger") == full / "anger.flac"      # любой формат с тем же именем
+    assert resolve_voice("A", voices, "male", "sad") == full / "neutral.wav"       # нет записи — neutral
+    assert resolve_voice("A", voices, "male") == full / "neutral.wav"              # без эмоции — neutral
+    only_joy = _records(tmp_path / "joy_only", "joy.wav")
+    assert find_reference(only_joy, "sad") == only_joy / "joy.wav"                 # тембр важнее эмоции
+    assert resolve_voice("A", voices, "female", "anger") is None                   # папки нет — встроенный
+    assert find_reference(_records(tmp_path / "empty"), "anger") is None
+
+
+def test_emotion_params(dev_cfg):
+    from tts.scene import emotion_params
+    base = {"exaggeration": 0.5, "cfg_weight": 0.5, "temperature": 0.8}
+    shifts = dev_cfg["tts"]["emotions"]
+    assert emotion_params(base, shifts, "neutral") == base
+    assert emotion_params(base, shifts, None) == base
+    assert emotion_params(base, shifts, "anger")["exaggeration"] == 0.65
+    assert emotion_params(base, shifts, "tired") == {"exaggeration": 0.35, "cfg_weight": 0.4, "temperature": 0.8}
+    assert emotion_params(base, {"sad": {"exaggeration": -2}}, "sad")["exaggeration"] == 0.0   # не ниже нуля
+    with pytest.raises(ValueError, match="speed"):
+        emotion_params(base, {"joy": {"speed": 1.2}}, "joy")
+
+
+def test_scene_voiced_by_emotion(dev_cfg, tmp_path, caplog):
+    """Реплика с эмоцией → запись этой эмоции для пола героя + поправка подачи."""
+    female = _records(tmp_path / "female", "neutral.wav", "anger.wav", "shock.wav")
+    male = _records(tmp_path / "male", "neutral.wav")
+    dev_cfg["tts"]["voices"].update(female=str(female), male=str(male))
+    scene = mock_scene("imessage_drama")
+    scene["meta"]["genders"] = {"A": "female", "B": "male"}
+    for line, emotion in zip(scene["script"], ["anger", "shock", None, "guilty"]):
+        if emotion:
+            line["emotion"] = emotion
+    engine = FakeEngine(dev_cfg)
+    with caplog.at_level("WARNING"):
+        result = synthesize_scene(scene, engine, out_path=tmp_path / "o.wav")
+    assert scene_errors(result) == []
+    assert [v for _, v in engine.calls] == [female / "anger.wav", male / "neutral.wav",
+                                            female / "neutral.wav", male / "neutral.wav"]
+    base = dev_cfg["tts"]["presets"]["neutral"]
+    assert [p["exaggeration"] for p in engine.params] == [0.65, 0.65, base["exaggeration"], base["exaggeration"]]
+    assert "shock.wav, guilty.wav" not in caplog.text and "guilty.wav, shock.wav" in caplog.text   # у мужского нет
+    assert result["audio"]["tts_params"] == base                     # в сцене — параметры пресета
+
+
+def test_reference_audio_trimmed_and_leveled(dev_cfg, tmp_path):
+    """Тишина в начале записи съела бы первые 6 с, по которым модель берёт интонацию."""
+    import pyloudnorm
+    t = np.arange(2 * SR) / SR
+    speech = 0.05 * np.sin(2 * np.pi * 220 * t) * (1 + 0.5 * np.sin(2 * np.pi * 3 * t))
+    path = tmp_path / "neutral.wav"
+    sf.write(path, np.concatenate([np.zeros(int(1.5 * SR)), speech, np.zeros(SR)]).astype(np.float32), SR)
+    wav, sr = sf.read(TTSEngine(dev_cfg).reference_audio(path))
+    assert sr == SR and len(wav) / SR == pytest.approx(2.1, abs=0.15)          # 2 с речи + поля по 0.05 с
+    assert pyloudnorm.Meter(SR).integrated_loudness(wav) == pytest.approx(-27, abs=0.5)
 
 
 def test_scene_without_script(dev_cfg, tmp_path):
