@@ -251,3 +251,62 @@ def test_client_keeps_long_answer_and_gives_up(dev_cfg, monkeypatch):
     monkeypatch.setattr(requests, "post", lambda *a, **kw: FakeStream([b""] * 20))
     with pytest.raises(DeepSeekError, match="нет ответа за 60 с"):
         DeepSeekClient(dev_cfg).chat_json("s", "u")
+
+
+@pytest.fixture
+def fake_api(dev_cfg, monkeypatch):
+    """Подставной API: ответы по очереди, запросы — в calls (модель — calls[i]["json"]["model"])."""
+    import requests
+    import scripting.client as client_mod
+    monkeypatch.setattr(client_mod.time, "sleep", lambda s: None)
+    clock = iter(range(0, 1_000_000, 10))                      # каждая строка ответа — +10 с
+    monkeypatch.setattr(client_mod.time, "monotonic", lambda: next(clock))
+    dev_cfg["deepseek"]["api_key"] = "test"
+    api = type("Api", (), {"responses": [], "calls": []})()
+    monkeypatch.setattr(requests, "post", lambda *a, **kw: api.calls.append(kw["json"]["model"]) or api.responses.pop(0))
+    return api
+
+
+def test_flash_first_pro_only_when_flash_fails(dev_cfg, fake_api):
+    """Основная — flash; v4-pro — только если flash не ответил, и дальше, пока идёт пауза."""
+    from pathlib import Path
+    fake_api.responses += [FakeStream(sse('{"ok": 1}'))]
+    assert DeepSeekClient(dev_cfg).chat_json("s", "u") == {"ok": 1}
+    assert fake_api.calls == ["deepseek-flash"]                            # flash работает — только он
+
+    fake_api.calls.clear()
+    fake_api.responses += [FakeStream([b""] * 20), FakeStream(sse('{"ok": 2}'))]   # flash висит
+    assert DeepSeekClient(dev_cfg).chat_json("s", "u") == {"ok": 2}
+    assert fake_api.calls == ["deepseek-flash", "deepseek-v4-pro"]
+
+    fake_api.calls.clear()
+    fake_api.responses += [FakeStream(sse('{"ok": 3}'))]
+    assert DeepSeekClient(dev_cfg).chat_json("s", "u") == {"ok": 3}          # следующая задача — другой процесс
+    assert fake_api.calls == ["deepseek-v4-pro"]                           # пауза: минуту на flash не ждём
+
+    Path(dev_cfg["paths"]["deepseek_state"]).write_text('{"primary_down_until": 0}', encoding="utf-8")
+    fake_api.calls.clear()
+    fake_api.responses += [FakeStream(sse('{"ok": 4}'))]
+    assert DeepSeekClient(dev_cfg).chat_json("s", "u") == {"ok": 4}
+    assert fake_api.calls == ["deepseek-flash"]                            # пауза прошла — снова flash
+
+
+def test_fallback_on_flash_error_not_on_bad_key(dev_cfg, fake_api):
+    from pathlib import Path
+    state = Path(dev_cfg["paths"]["deepseek_state"])
+    fake_api.responses += [FakeStream([], status=400), FakeStream(sse('{"ok": 1}'))]   # «Model Not Exist»
+    assert DeepSeekClient(dev_cfg).chat_json("s", "u") == {"ok": 1}
+    assert fake_api.calls == ["deepseek-flash", "deepseek-v4-pro"] and state.exists()
+
+    state.unlink()
+    fake_api.calls.clear()
+    fake_api.responses += [FakeStream(sse("не json")), FakeStream(sse('{"ok": 2}'))]
+    assert DeepSeekClient(dev_cfg).chat_json("s", "u") == {"ok": 2}
+    assert fake_api.calls == ["deepseek-flash", "deepseek-v4-pro"]
+    assert not state.exists()                                  # один битый ответ flash не отключает
+
+    fake_api.calls.clear()
+    fake_api.responses += [FakeStream([], status=401)]
+    with pytest.raises(DeepSeekError, match="401"):
+        DeepSeekClient(dev_cfg).chat_json("s", "u")            # неверный ключ — запасная не поможет
+    assert fake_api.calls == ["deepseek-flash"]

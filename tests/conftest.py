@@ -32,5 +32,6 @@ def dev_cfg(tmp_path):
         hw=make_hw("Windows", gpus=["AMD Radeon RX 6600"], vendors=["amd"])
     )
     cfg["paths"]["scripting_history"] = str(tmp_path / "scripting-history.json")
+    cfg["paths"]["deepseek_state"] = str(tmp_path / "deepseek-state.json")
     cfg["tts"]["voices"].update(female="", male="")
     return cfg
