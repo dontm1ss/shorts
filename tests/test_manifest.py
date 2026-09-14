@@ -47,3 +47,13 @@ def test_record_appends_without_overwriting(dev_cfg, tmp_path):
                {"duration_s": 1.0, "output": f"o{i}.mp4"})
     entries = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
     assert [e["scene_id"] for e in entries] == ["s0", "s1", "s2"]
+
+
+def test_rerender_replaces_entry(dev_cfg, tmp_path):
+    """Перерендер той же сцены — тот же файл ролика: в «Готовых» он не должен задваиваться."""
+    cfg = _cfg(dev_cfg, tmp_path)
+    for scene_id, duration in (("s0", 1.0), ("s1", 1.0), ("s0", 2.0)):
+        record(cfg, {"scene_id": scene_id, "type": "video_clip", "created_at": ""},
+               {"duration_s": duration, "output": f"{scene_id}.mp4"})
+    entries = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    assert [(e["scene_id"], e["duration_s"]) for e in entries] == [("s1", 1.0), ("s0", 2.0)]

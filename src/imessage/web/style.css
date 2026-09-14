@@ -88,37 +88,45 @@ html, body {
 .right .bubble { --tail: #3b82f6; background: #3b82f6; color: #fff; transform-origin: 100% 100%; }
 .left .bubble { --tail: var(--gray-bubble); background: var(--gray-bubble); color: var(--text); transform-origin: 0 100%; }
 
-/* «хвостик» у последнего сообщения в серии */
-.last .bubble::before,
-.last .bubble::after {
+/* «Хвостик» у последнего сообщения в серии. Классическая форма iMessage рисовалась квадратом
+   цвета пузыря и маской цвета фона поверх — на прозрачном фоне маска не видна, и хвостик
+   превращался в квадратный уголок. Поэтому форма — вектором (маска SVG): квадрат 20×20 у нижнего
+   угла пузыря (правый край пузыря — x=13), изгиб наружу к кончику и срез снизу эллипсом 16×14. */
+.last .bubble::before {
   content: "";
   position: absolute;
   bottom: 0;
+  width: 20px;
   height: 20px;
-}
-.last.right .bubble::before {
-  right: -7px;
-  width: 20px;
   background: var(--tail);
-  border-bottom-left-radius: 16px 14px;
+  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'><path d='M0 0H13V10A10 10 0 0 0 20 19.54V20H16A16 14 0 0 1 0 6Z'/></svg>");
+          mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'><path d='M0 0H13V10A10 10 0 0 0 20 19.54V20H16A16 14 0 0 1 0 6Z'/></svg>");
+  -webkit-mask-size: 100% 100%;
+          mask-size: 100% 100%;
 }
-.last.right .bubble::after {
-  right: -26px;
-  width: 26px;
-  background: transparent;
-  border-bottom-left-radius: 10px;
+.last.right .bubble::before { right: -7px; }
+.last.left .bubble::before { left: -7px; transform: scaleX(-1); }
+
+/* «Печатает…» в iOS — без хвостика: два кружка у нижнего левого угла */
+.last.left .bubble.typing::before {
+  -webkit-mask-image: none;
+          mask-image: none;
+  transform: none;
+  left: -3px;
+  bottom: -3px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
 }
-.last.left .bubble::before {
-  left: -7px;
-  width: 20px;
+.bubble.typing::after {
+  content: "";
+  position: absolute;
+  left: -8px;
+  bottom: -8px;
+  width: 6.5px;
+  height: 6.5px;
+  border-radius: 50%;
   background: var(--tail);
-  border-bottom-right-radius: 16px 14px;
-}
-.last.left .bubble::after {
-  left: -26px;
-  width: 26px;
-  background: transparent;
-  border-bottom-right-radius: 10px;
 }
 
 .receipt {

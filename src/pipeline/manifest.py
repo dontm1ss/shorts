@@ -31,9 +31,11 @@ def _label(scene: dict) -> dict:
 
 
 def record(cfg: dict, scene: dict, result: dict) -> None:
-    """Добавляет запись о готовом ролике. Атомарная запись, как data/processed-forum-ids.json."""
+    """Добавляет запись о готовом ролике; перерендер той же сцены заменяет прежнюю запись
+    (файл ролика тот же). Атомарная запись, как data/processed-forum-ids.json."""
     path = _manifest_path(cfg)
     entries = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+    entries = [e for e in entries if e.get("scene_id") != scene["scene_id"]]
     entries.append({
         "scene_id": scene["scene_id"],
         "type": scene["type"],
