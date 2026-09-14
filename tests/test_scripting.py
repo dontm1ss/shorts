@@ -192,3 +192,57 @@ def test_client_requires_key(dev_cfg):
     dev_cfg["deepseek"]["api_key"] = None
     with pytest.raises(DeepSeekError, match=".env"):
         DeepSeekClient(dev_cfg)
+
+
+class FakeStream:
+    """Ответ DeepSeek потоком (SSE): строки data: {...}, пустые строки и «: keep-alive»."""
+
+    def __init__(self, lines, status=200):
+        self.lines, self.status_code, self.text = lines, status, ""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def iter_lines(self):
+        yield from self.lines
+
+
+def sse(*texts):
+    import json
+    chunks = [json.dumps({"choices": [{"delta": {"content": t}}]}, ensure_ascii=False).encode() for t in texts]
+    return [b": keep-alive", b""] + [b"data: " + c for c in chunks] + [b"data: [DONE]"]
+
+
+def test_client_restarts_hung_request(dev_cfg, monkeypatch):
+    """DeepSeek при перегрузке держит соединение пустыми строками вместо ответа — перезапуск."""
+    import requests
+    import scripting.client as client_mod
+    monkeypatch.setattr(client_mod.time, "sleep", lambda s: None)
+    clock = iter(range(0, 10_000, 10))                        # каждая строка — +10 с
+    monkeypatch.setattr(client_mod.time, "monotonic", lambda: next(clock))
+    responses = [FakeStream([b""] * 20),                          # 200 с одних пустых строк
+                 FakeStream([], status=503),
+                 FakeStream(sse('{"title": ', '"Скрин"}'))]
+    calls = []
+    monkeypatch.setattr(requests, "post", lambda *a, **kw: calls.append(kw) or responses.pop(0))
+    dev_cfg["deepseek"]["api_key"] = "test"
+    assert DeepSeekClient(dev_cfg).chat_json("s", "u") == {"title": "Скрин"}
+    assert len(calls) == 3 and calls[0]["json"]["stream"] is True
+
+
+def test_client_keeps_long_answer_and_gives_up(dev_cfg, monkeypatch):
+    import requests
+    import scripting.client as client_mod
+    monkeypatch.setattr(client_mod.time, "sleep", lambda s: None)
+    clock = iter(range(0, 10_000, 20))                        # текст идёт медленно: 20 с на кусок
+    monkeypatch.setattr(client_mod.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(requests, "post", lambda *a, **kw: FakeStream(sse('{"a"', ": ", "1", "}")))
+    dev_cfg["deepseek"]["api_key"] = "test"
+    assert DeepSeekClient(dev_cfg).chat_json("s", "u") == {"a": 1}     # 80 с, но ответ шёл — не оборван
+
+    monkeypatch.setattr(requests, "post", lambda *a, **kw: FakeStream([b""] * 20))
+    with pytest.raises(DeepSeekError, match="нет ответа за 60 с"):
+        DeepSeekClient(dev_cfg).chat_json("s", "u")

@@ -1,4 +1,10 @@
-"""Клиент DeepSeek API (OpenAI-совместимый chat/completions, JSON-режим)."""
+"""Клиент DeepSeek API (OpenAI-совместимый chat/completions, JSON-режим).
+
+Ответ читается потоком (stream): при перегрузке DeepSeek не отвечает ошибкой, а держит
+соединение пустыми keep-alive строками до 30 минут — обычный таймаут чтения их не замечает,
+и задача висела бы бесконечно. Поток показывает, пишет ли модель на самом деле: нет первого
+куска текста за deepseek.timeout_s — запрос перезапускается. Начавшийся ответ не обрывается,
+пока текст идёт."""
 from __future__ import annotations
 
 import json
@@ -10,10 +16,16 @@ import requests
 log = logging.getLogger(__name__)
 
 _RETRY_STATUS = {429, 500, 502, 503, 504}
+_STALL_S = 30       # поток замер (ни байта, даже keep-alive) — обрыв
+_TOTAL_S = 300      # предел на весь ответ, даже если текст идёт
 
 
 class DeepSeekError(RuntimeError):
     pass
+
+
+class _Retry(Exception):
+    """Попытка не удалась, но можно повторить."""
 
 
 class DeepSeekClient:
@@ -28,8 +40,36 @@ class DeepSeekClient:
         self.timeout = d["timeout_s"]
         self.max_retries = d["max_retries"]
 
+    def _request(self, payload: dict) -> str:
+        """Один запрос потоком → текст ответа модели."""
+        start = time.monotonic()
+        parts: list[str] = []
+        try:
+            with requests.post(self.url, json={**payload, "stream": True}, stream=True,
+                               timeout=(15, _STALL_S), headers={"Authorization": f"Bearer {self._key}"}) as resp:
+                if resp.status_code in _RETRY_STATUS:
+                    raise _Retry(f"HTTP {resp.status_code}")
+                if resp.status_code != 200:
+                    raise DeepSeekError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+                for line in resp.iter_lines():
+                    elapsed = time.monotonic() - start
+                    if not parts and elapsed > self.timeout:
+                        raise _Retry(f"нет ответа за {self.timeout} с (DeepSeek перегружен)")
+                    if elapsed > _TOTAL_S:
+                        raise _Retry(f"ответ не закончился за {_TOTAL_S} с")
+                    if not line.startswith(b"data:"):      # пустые строки и «: keep-alive»
+                        continue
+                    data = line[5:].strip()
+                    if data == b"[DONE]":
+                        break
+                    if text := json.loads(data)["choices"][0]["delta"].get("content"):
+                        parts.append(text)
+        except requests.RequestException as e:
+            raise _Retry(f"сеть: {type(e).__name__}") from e
+        return "".join(parts)
+
     def chat_json(self, system: str, user: str, temperature: float | None = None) -> dict:
-        """Запрос с ответом-JSON. Повторяет при сетевых ошибках, 429/5xx и битом JSON."""
+        """Запрос с ответом-JSON. Повторяет при зависании, сетевых ошибках, 429/5xx и битом JSON."""
         payload = {
             "model": self.model,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
@@ -41,20 +81,12 @@ class DeepSeekClient:
             if attempt:
                 time.sleep(2 ** attempt)
             try:
-                resp = requests.post(self.url, json=payload, timeout=self.timeout,
-                                     headers={"Authorization": f"Bearer {self._key}"})
-            except requests.RequestException as e:
-                last_error = f"сеть: {type(e).__name__}"
-                continue
-            if resp.status_code in _RETRY_STATUS:
-                last_error = f"HTTP {resp.status_code}"
-                continue
-            if resp.status_code != 200:
-                raise DeepSeekError(f"HTTP {resp.status_code}: {resp.text[:300]}")
-            content = resp.json()["choices"][0]["message"]["content"]
-            try:
+                content = self._request(payload)
                 return json.loads(content)
+            except _Retry as e:
+                last_error = str(e)
             except json.JSONDecodeError:
                 last_error = "ответ не JSON"
-                continue
+            log.warning("DeepSeek: %s — попытка %d/%d%s", last_error, attempt + 1, self.max_retries,
+                        ", повторяю" if attempt + 1 < self.max_retries else "")
         raise DeepSeekError(f"DeepSeek не ответил после {self.max_retries} попыток ({last_error})")

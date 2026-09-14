@@ -37,7 +37,10 @@ manifest = "output/manifest.json"                   # список готовы�
 base_url = "https://api.deepseek.com"
 model = "deepseek-chat"
 temperature = 1.0
-timeout_s = 120
+# Сколько ждать начала ответа. При перегрузке DeepSeek не отвечает ошибкой, а держит соединение
+# пустыми строками до 30 минут — после timeout_s без текста запрос перезапускается (scripting/client.py).
+# Начавшийся ответ не обрывается, пока текст идёт.
+timeout_s = 60
 max_retries = 3
 # api_key — только из .env (DEEPSEEK_API_KEY)
 
