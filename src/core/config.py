@@ -186,6 +186,7 @@ def load_config(profile: str | None = None, hw: dict | None = None) -> dict:
     cfg["deepseek"]["api_key"] = secret("DEEPSEEK_API_KEY")
     cfg["scraper"]["reddit_client_id"] = secret("REDDIT_CLIENT_ID")
     cfg["scraper"]["reddit_client_secret"] = secret("REDDIT_CLIENT_SECRET")
+    cfg["panel"]["password"] = secret("PANEL_PASSWORD")
     # Переменные, которые должны быть выставлены до импорта torch
     for key, value in cfg["tts"].get("env", {}).items():
         os.environ.setdefault(key, value)
@@ -249,7 +250,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else value)
     elif args.json:
         shown = copy.deepcopy(cfg)
-        for section, key in (("deepseek", "api_key"), ("scraper", "reddit_client_secret")):
+        for section, key in (("deepseek", "api_key"), ("scraper", "reddit_client_secret"), ("panel", "password")):
             if shown[section].get(key):
                 shown[section][key] = "***"
         print(json.dumps(shown, ensure_ascii=False, indent=2))

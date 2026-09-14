@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -70,6 +71,21 @@ def scene_words(scene: dict, cfg: dict, use_whisper: bool = True, tmp_dir: Path 
     raise ValueError("Нечего субтитровать: в сцене нет script")
 
 
+def pick_style(scene: dict, cfg: dict) -> dict:
+    """Шрифт и цвет подсветки сцены (subtitles.variety): сохранённый в meta.style, иначе выбор
+    по scene_id — детерминированно, чтобы перерендер давал тот же вид. {} — общий стиль."""
+    if saved := scene.get("meta", {}).get("style"):
+        return saved
+    variety = cfg["subtitles"].get("variety", {})
+    if not variety.get("enabled"):
+        return {}
+    fonts, colors = variety["fonts"], variety["highlight_colors"]
+    h = int(hashlib.sha1(scene["scene_id"].encode()).hexdigest(), 16)
+    font = fonts[h % len(fonts)]
+    return {"font": font["name"], "size": font["size"],
+            "highlight_color": colors[(h // len(fonts)) % len(colors)]}
+
+
 def subtitle_scene(scene: dict, cfg: dict, use_whisper: bool = True, out_dir: Path | None = None) -> dict:
     s = cfg["subtitles"]
     out_dir = out_dir or work_dir(cfg, scene)
@@ -77,12 +93,17 @@ def subtitle_scene(scene: dict, cfg: dict, use_whisper: bool = True, out_dir: Pa
     words = scene_words(scene, cfg, use_whisper, out_dir)
     groups = group_words(words, s["max_words"], s["max_chars"], s["max_gap_s"])
     layout = cfg["compositor"]["layout"][scene["type"]]
-    ass = write_ass(groups, out_dir / "subs.ass", s, layout, cfg["video"]["width"], cfg["video"]["height"])
+    style = pick_style(scene, cfg)
+    sub_cfg = {**s, "style": {**s["style"], **style}}
+    ass = write_ass(groups, out_dir / "subs.ass", sub_cfg, layout, cfg["video"]["width"], cfg["video"]["height"])
     write_srt(groups, out_dir / "subs.srt", s["uppercase"])
     (out_dir / "words.json").write_text(
         json.dumps([w.to_dict() for w in words], ensure_ascii=False, indent=1), encoding="utf-8")
-    log.info("Субтитры: %d слов, %d титров → %s", len(words), len(groups), rel_path(ass))
+    log.info("Субтитры: %d слов, %d титров, %s → %s", len(words), len(groups),
+             f"{style['font']} / {style['highlight_color']}" if style else "общий стиль", rel_path(ass))
 
     scene = copy.deepcopy(scene)
     scene["subtitles"] = {"path": rel_path(ass), "format": "ass"}
+    if style:
+        scene.setdefault("meta", {})["style"] = style
     return validate_scene(scene)

@@ -42,6 +42,32 @@ class JobContext:
 
 # --- сценарии -------------------------------------------------------------------
 
+def _after_script(scene: dict, path: Path, cfg: dict) -> dict:
+    """Сценарий готов: на отбор в веб-панель (review.enabled) или сразу в работу."""
+    from pipeline.review import mark_pending, processing_chain
+    if cfg["review"]["enabled"]:
+        save_scene(mark_pending(scene), path)
+        log.info("Ждёт решения в панели отбора (python -m panel)")
+        return {"scene": rel_path(path), "review": "pending"}
+    save_scene(scene, path)
+    return {"scene": rel_path(path), "next": [processing_chain(scene, cfg, path)]}
+
+
+def script_batch(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dict:
+    """N историй: берёт лучшие неиспользованные посты, при нехватке — сначала парсит форумы."""
+    from scraper import pending_posts, scrape
+    count = int(payload.get("count", 1))
+    posts = pending_posts(cfg)
+    if len(posts) < count:
+        scrape(cfg)
+        posts = pending_posts(cfg)
+    posts = posts[:count]
+    if not posts:
+        raise RuntimeError("Нет новых постов — источники ничего не вернули (лимиты Reddit?)")
+    log.info("Постов для историй: %d из %d запрошенных", len(posts), count)
+    return {"posts": len(posts),
+            "next": [[{"kind": "script_story", "payload": {"post": rel_path(p)}}] for p in posts]}
+
 def _prefit(scene: dict, cfg: dict, client) -> dict:
     """Подгонка длины по оценке темпа — до дорогого синтеза."""
     from scripting import estimate_duration_s, rewrite_scene_length
@@ -65,15 +91,9 @@ def script_story(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dic
     scene = _prefit(story_scene(story, cfg, {k: post.get(k) for k in ("id", "source", "url", "title")}),
                     cfg, client)
     path = scene_path(cfg, scene["scene_id"])
-    save_scene(scene, path)
     mark_processed(cfg, post["id"])
     log.info("История «%s» → %s", scene["meta"]["title"], rel_path(path))
-    p = {"scene": rel_path(path)}
-    return {"scene": rel_path(path), "next": [[
-        {"kind": "tts_synthesis", "payload": p},
-        {"kind": "subtitle_generation", "payload": p},
-        {"kind": "video_render", "payload": p},
-    ]]}
+    return _after_script(scene, path, cfg)
 
 
 def script_drama(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dict:
@@ -82,14 +102,8 @@ def script_drama(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dic
     topic = payload.get("topic")
     scene = _prefit(drama_scene(generate_drama(client, cfg, topic), cfg, topic), cfg, client)
     path = scene_path(cfg, scene["scene_id"])
-    save_scene(scene, path)
     log.info("Переписка «%s» (%d сообщений) → %s", scene["meta"]["title"], len(scene["script"]), rel_path(path))
-    p = {"scene": rel_path(path)}
-    chain = [{"kind": "tts_synthesis", "payload": p}]
-    if "imessage_drama" in cfg["compositor"]["subtitles_for"]:
-        chain.append({"kind": "subtitle_generation", "payload": p})
-    chain += [{"kind": "ui_render", "payload": p}, {"kind": "video_render", "payload": p}]
-    return {"scene": rel_path(path), "next": [chain]}
+    return _after_script(scene, path, cfg)
 
 
 # --- тяжёлые этапы --------------------------------------------------------------
@@ -163,9 +177,25 @@ def video_render(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dic
         scene["background"] = pick_background(cfg, round(scene_duration_s(scene, cfg) * 1000))
         save_scene(scene, path)
     ui = work_dir(cfg, scene) / "ui.mov" if scene["type"] == "imessage_drama" else None
+    if ui is not None and not ui.exists():   # удалена автоочисткой после прошлого рендера
+        from imessage import record_scene
+        record_scene(scene, cfg, ui)
     result = render_scene(scene, cfg, ui_video=ui)
     record_manifest(cfg, scene, result)
+    _cleanup(scene, cfg)
     return result
+
+
+def _cleanup(scene: dict, cfg: dict) -> None:
+    """Удалить тяжёлые промежуточные файлы сцены (cleanup.after_render)."""
+    freed = 0
+    for name in cfg["cleanup"]["after_render"]:
+        path = work_dir(cfg, scene) / name
+        if path.exists():
+            freed += path.stat().st_size
+            path.unlink()
+    if freed:
+        log.info("Очистка: освобождено %.0f МБ", freed / 2**20)
 
 
 def video_clip_extraction(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dict:
@@ -192,6 +222,7 @@ def video_clip_extraction(payload: dict, cfg: dict, ctx: JobContext | None = Non
 
 
 HANDLERS = {
+    "script_batch": script_batch,
     "script_story": script_story,
     "script_drama": script_drama,
     "tts_synthesis": tts_synthesis,

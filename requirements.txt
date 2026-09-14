@@ -11,4 +11,7 @@ faster-whisper==1.2.1
 jsonschema==4.26.0
 requests>=2.32
 playwright==1.55.0       # запись интерфейса iMessage (браузер — системный Edge/Chrome)
+fastapi==0.118.0         # веб-панель отбора сценариев (python -m panel)
+uvicorn==0.37.0
+httpx>=0.27              # TestClient в тестах панели
 pytest==9.1.1

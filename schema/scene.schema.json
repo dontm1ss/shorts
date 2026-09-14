@@ -97,6 +97,23 @@
       "type": "object",
       "description": "данные конкретного формата: title, contacts (iMessage), source (форум) и т.п.",
       "properties": {
+        "style": {
+          "type": "object",
+          "description": "оформление субтитров сцены (subtitles.variety): font, size, highlight_color",
+          "properties": {
+            "font": { "type": "string", "minLength": 1 },
+            "size": { "type": "integer", "minimum": 20 },
+            "highlight_color": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" }
+          }
+        },
+        "review": {
+          "type": "object",
+          "description": "отбор сценария в веб-панели",
+          "required": ["status"],
+          "properties": {
+            "status": { "enum": ["pending", "approved", "rejected"] }
+          }
+        },
         "genders": {
           "type": "object",
           "description": "пол героев по ролям — выбор голоса озвучки (tts.voices.female / male)",

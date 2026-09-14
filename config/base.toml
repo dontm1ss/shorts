@@ -113,6 +113,20 @@ outline = 6
 shadow = 3
 pop_scale = 115               # «прыжок» текущего слова, % от размера
 
+# Разнообразие оформления: каждой сцене — свой шрифт и цвет подсветки (выбор детерминирован
+# от scene_id и сохраняется в meta.style — перерендер даёт тот же вид). Шрифты — только те,
+# что есть и в Windows 10/11, и в macOS. size — размер под этот шрифт (ширина букв разная).
+[subtitles.variety]
+enabled = true
+fonts = [
+  { name = "Arial Black", size = 92 },
+  { name = "Impact", size = 108 },
+  { name = "Verdana", size = 86 },
+  { name = "Trebuchet MS", size = 96 },
+  { name = "Tahoma", size = 94 },
+]
+highlight_colors = ["#FFE600", "#39FF14", "#00E5FF", "#FF4FD8", "#FF9F1A"]
+
 # Вертикальный центр субтитров по раскладкам (кадр 1080×1920)
 [subtitles.position_y]
 full_bg = 1060       # история на паркуре — чуть ниже центра
@@ -137,6 +151,22 @@ path = "parkur.mp4"
 [[backgrounds]]
 name = "subway_surfers"
 path = "subway.mp4"
+
+[cleanup]
+# После успешного рендера — удалить тяжёлые промежуточные файлы сцены (output/work/<scene_id>/).
+# ui.mov (запись переписки с прозрачностью) весит сотни МБ; при перерендере он пишется заново.
+# voice.wav и субтитры остаются — по ним ролик перерендеривается без повторной озвучки.
+after_render = ["ui.mov", "clip_audio.wav"]
+
+[review]
+# Отбор сценариев: после DeepSeek сценарий ждёт решения в веб-панели (python -m panel) —
+# на озвучку и рендер уходят только одобренные. false — сразу в работу, как раньше.
+enabled = true
+
+[panel]
+host = "127.0.0.1"   # только локально; наружу — через туннель на сервер (docs/panel-deploy.md)
+port = 8765
+user = "admin"       # пароль — PANEL_PASSWORD в .env; без него панель пускает всех (только localhost!)
 
 [compositor]
 clip_fit = "cover"        # cover — заполнить область с обрезкой краёв; contain — вписать на размытом фоне

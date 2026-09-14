@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Shorts — отбор сценариев</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">Shorts<span>отбор сценариев</span></div>
+  <div class="worker">
+    <span id="worker-state" class="dot"></span>
+    <button id="worker-start" class="ghost" hidden>Запустить обработку</button>
+  </div>
+</header>
+
+<section class="generate">
+  <form class="gen" data-kind="story">
+    <label>Истории с форумов</label>
+    <input type="number" name="count" min="1" max="20" value="3" aria-label="сколько историй">
+    <button type="submit">Сгенерировать</button>
+  </form>
+  <form class="gen" data-kind="drama">
+    <label>Переписки</label>
+    <input type="number" name="count" min="1" max="20" value="3" aria-label="сколько переписок">
+    <input type="text" name="topic" placeholder="тема — необязательно" class="topic">
+    <button type="submit">Сгенерировать</button>
+  </form>
+</section>
+
+<nav class="tabs" role="tablist">
+  <button data-tab="pending" class="active">На проверке <b id="n-pending"></b></button>
+  <button data-tab="videos">Готовые <b id="n-videos"></b></button>
+  <button data-tab="queue">Очередь <b id="n-queue"></b></button>
+  <button data-tab="rejected">Отклонённые <b id="n-rejected"></b></button>
+</nav>
+
+<main id="content"></main>
+<div id="toast" role="status" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
