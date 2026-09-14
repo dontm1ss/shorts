@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import asdict, dataclass
 from difflib import SequenceMatcher
@@ -23,6 +24,23 @@ class Word:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+def save_words(words: list[Word], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps([w.to_dict() for w in words], ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def load_words(path: Path) -> list[Word]:
+    return [Word(**w) for w in json.loads(Path(path).read_text(encoding="utf-8"))]
+
+
+def clip_words(words: list[Word], start_s: float, end_s: float) -> list[Word]:
+    """Слова отрезка [start_s, end_s) исходника — время от начала отрезка. Слово на границе
+    берётся, если его середина внутри отрезка."""
+    duration = end_s - start_s
+    return [Word(w.text, max(0.0, w.start - start_s), min(duration, w.end - start_s))
+            for w in words if start_s <= (w.start + w.end) / 2 < end_s]
 
 
 def normalize(token: str) -> str:

@@ -161,6 +161,9 @@ fallback_encoder_args = ["-preset", "veryfast", "-crf", "21"]
 max_parallel_jobs = 1
 db = "output/queue.sqlite"
 max_attempts = 2
+# Все готовые задачи озвучки выполняются одним процессом по очереди: модели TTS и whisper
+# грузятся один раз на пачку, а не на каждый ролик. Задачи по-прежнему строго по одной.
+tts_batch_size = 20
 
 [scraper]
 # Публичная RSS-лента Reddit (без авторизации; JSON без OAuth закрыт — 403, у RSS жёсткий лимит).

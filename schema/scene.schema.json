@@ -39,6 +39,10 @@
       "properties": {
         "path": { "type": "string", "minLength": 1 },
         "duration_ms": { "type": "integer", "minimum": 0 },
+        "words_path": {
+          "type": "string", "minLength": 1,
+          "description": "пословные таймкоды из проверки озвучки whisper'ом (JSON) — субтитры берут их без повторного распознавания"
+        },
         "tts_params": {
           "type": "object",
           "additionalProperties": false,
@@ -81,7 +85,11 @@
       "properties": {
         "path": { "type": "string", "minLength": 1 },
         "clip_start_ms": { "type": "integer", "minimum": 0 },
-        "clip_end_ms": { "type": "integer", "minimum": 1 }
+        "clip_end_ms": { "type": "integer", "minimum": 1 },
+        "words_path": {
+          "type": "string", "minLength": 1,
+          "description": "распознанные слова всего исходника (JSON, время от начала исходника) — один проход whisper на все отрезки"
+        }
       }
     },
 

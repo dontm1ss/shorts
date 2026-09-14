@@ -1,5 +1,6 @@
-"""Обработчики задач очереди. Каждый выполняется в отдельном процессе (python -m pipeline job <id>)
-и возвращает result; ключ "next" — цепочки задач, которые нужно поставить после этой:
+"""Обработчики задач очереди. Выполняются в отдельном процессе (python -m pipeline job <id> [<id>…]):
+обычно одна задача на процесс, озвучка — пачкой (JobContext держит модель TTS между задачами).
+Обработчик возвращает result; ключ "next" — цепочки задач, которые нужно поставить после этой:
     {"next": [[{kind, payload}, ...], ...]}   — каждая цепочка последовательна, цепочки независимы.
 
 Состояние сцены между этапами — файл output/scenes/<scene_id>.json.
@@ -10,13 +11,33 @@ import json
 import logging
 from pathlib import Path
 
-from core.scene import abs_path, load_scene, rel_path, save_scene, scene_path, work_dir
+from core.scene import abs_path, load_scene, output_dir, rel_path, save_scene, scene_path, work_dir
 
 log = logging.getLogger(__name__)
 
 
 def _scene_file(payload: dict) -> Path:
     return abs_path(payload["scene"])
+
+
+class JobContext:
+    """Общие ресурсы задач одного процесса. Модели TTS и whisper-проверки грузятся один раз
+    на пачку задач озвучки, а не на каждый ролик."""
+
+    def __init__(self, cfg: dict):
+        self.cfg = cfg
+        self._tts = None
+
+    def tts_engine(self):
+        if self._tts is None:
+            from tts import TTSEngine
+            self._tts = TTSEngine(self.cfg)
+        return self._tts
+
+    def close(self) -> None:
+        if self._tts is not None:
+            self._tts.unload()
+            self._tts = None
 
 
 # --- сценарии -------------------------------------------------------------------
@@ -35,7 +56,7 @@ def _prefit(scene: dict, cfg: dict, client) -> dict:
     return scene
 
 
-def script_story(payload: dict, cfg: dict) -> dict:
+def script_story(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dict:
     from scraper.store import mark_processed
     from scripting import DeepSeekClient, adapt_story, story_scene
     post = json.loads(abs_path(payload["post"]).read_text(encoding="utf-8"))
@@ -55,7 +76,7 @@ def script_story(payload: dict, cfg: dict) -> dict:
     ]]}
 
 
-def script_drama(payload: dict, cfg: dict) -> dict:
+def script_drama(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dict:
     from scripting import DeepSeekClient, drama_scene, generate_drama
     client = DeepSeekClient(cfg)
     topic = payload.get("topic")
@@ -73,19 +94,21 @@ def script_drama(payload: dict, cfg: dict) -> dict:
 
 # --- тяжёлые этапы --------------------------------------------------------------
 
-def tts_synthesis(payload: dict, cfg: dict) -> dict:
+def tts_synthesis(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dict:
     """Озвучка. По умолчанию — один проход, без подгонки под 50–60 с: рендер сам обрезает
     видео по концу озвучки (scene_duration_s), так что точный тайминг не нужен, а докрутка
     темпа и повторные вызовы DeepSeek только тратят время на медленном TTS. С fit=True в
     payload — старое поведение: небольшой промах (≤7%) докручивается темпом, большой —
     DeepSeek переписывает текст и озвучка повторяется (до story.max_fit_rounds раз)."""
-    from tts import TTSEngine, synthesize_scene
+    from tts import synthesize_scene
     from tts.scene import stretch_scene_audio
     path = _scene_file(payload)
     scene = load_scene(path)
     s = cfg["story"]
     lo_ms, hi_ms = s["min_duration_s"] * 1000, s["max_duration_s"] * 1000
-    engine = TTSEngine(cfg)
+    own_ctx = ctx is None                 # одиночный вызов — модель выгружается сразу
+    ctx = ctx or JobContext(cfg)
+    engine = ctx.tts_engine()
     client = None
     try:
         for round_ in range(s["max_fit_rounds"] + 1):
@@ -108,12 +131,13 @@ def tts_synthesis(payload: dict, cfg: dict) -> dict:
             client = client or DeepSeekClient(cfg)
             scene = rewrite_scene_length(scene, duration_ms / 1000, client, cfg)
     finally:
-        engine.unload()
+        if own_ctx:
+            ctx.close()
     save_scene(voiced, path)
     return {"duration_s": voiced["audio"]["duration_ms"] / 1000, "audio": voiced["audio"]["path"]}
 
 
-def subtitle_generation(payload: dict, cfg: dict) -> dict:
+def subtitle_generation(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dict:
     from subtitles import subtitle_scene
     path = _scene_file(payload)
     scene = subtitle_scene(load_scene(path), cfg, use_whisper=payload.get("whisper", True))
@@ -121,7 +145,7 @@ def subtitle_generation(payload: dict, cfg: dict) -> dict:
     return {"subtitles": scene["subtitles"]["path"]}
 
 
-def ui_render(payload: dict, cfg: dict) -> dict:
+def ui_render(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dict:
     from imessage import record_scene
     path = _scene_file(payload)
     scene = load_scene(path)
@@ -129,7 +153,7 @@ def ui_render(payload: dict, cfg: dict) -> dict:
     return {"ui_video": rel_path(out)}
 
 
-def video_render(payload: dict, cfg: dict) -> dict:
+def video_render(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dict:
     from compositor import pick_background, scene_duration_s
     from pipeline.manifest import record as record_manifest
     from renderer import render_scene
@@ -144,10 +168,18 @@ def video_render(payload: dict, cfg: dict) -> dict:
     return result
 
 
-def video_clip_extraction(payload: dict, cfg: dict) -> dict:
+def video_clip_extraction(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dict:
+    from subtitles import transcribe_source
     from video_clipper import cut_video
-    scenes = cut_video(abs_path(payload["video"]), cfg, write_files=payload.get("write_files"))
+    source = abs_path(payload["video"])
+    scenes = cut_video(source, cfg, write_files=payload.get("write_files"))
     limit = payload.get("render_limit")
+    if "video_clip" in cfg["compositor"]["subtitles_for"] and limit != 0:
+        # Один проход whisper на весь исходник вместо отдельного на каждый отрезок: окно 30 с
+        # с шагом 2 с — иначе каждая секунда распознавалась бы 15 раз
+        words = rel_path(transcribe_source(source, cfg, output_dir(cfg, "clips", source.stem) / "words.json"))
+        for scene in scenes:
+            scene["source_video"]["words_path"] = words
     chains = []
     for scene in scenes:
         path = scene_path(cfg, scene["scene_id"])

@@ -115,6 +115,21 @@ class JobQueue:
                       "WHERE id=?", (_now(), row["id"]))
         return self.get(row["id"])
 
+    def claim_ready(self, kind: str, limit: int) -> list[Job]:
+        """Ещё до limit готовых задач того же вида — выполнить пачкой в одном процессе
+        (модель TTS грузится один раз на пачку, а не на каждый ролик)."""
+        if limit <= 0:
+            return []
+        with self._tx() as c:
+            ids = [r["id"] for r in c.execute("""
+                SELECT j.id FROM jobs j LEFT JOIN jobs d ON d.id = j.depends_on
+                WHERE j.status = 'pending' AND j.kind = ? AND (j.depends_on IS NULL OR d.status = 'done')
+                ORDER BY j.id LIMIT ?""", (kind, limit))]
+            for job_id in ids:
+                c.execute("UPDATE jobs SET status='running', attempts=attempts+1, started_at=?, error=NULL "
+                          "WHERE id=?", (_now(), job_id))
+        return [self.get(i) for i in ids]
+
     def complete(self, job_id: int, result: dict | None = None) -> None:
         self.conn.execute("UPDATE jobs SET status='done', result=?, finished_at=? WHERE id=?",
                           (json.dumps(result or {}, ensure_ascii=False), _now(), job_id))

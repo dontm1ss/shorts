@@ -171,44 +171,62 @@ class TTSEngine:
         return [Word(w.word.strip(), w.start, w.end)
                 for seg in segments for w in (seg.words or []) if w.word.strip()]
 
-    def _verify(self, wav: np.ndarray, text: str) -> tuple[np.ndarray, float]:
-        """Обрезка по распознанной речи + доля ошибки. Хвостовой шум/бормотание уходит."""
+    def _verify(self, wav: np.ndarray, text: str) -> tuple[np.ndarray, float, list[Word]]:
+        """Обрезка по распознанной речи + доля ошибки + слова с таймкодами от начала обрезанного
+        куска (их берут субтитры — второй раз whisper не нужен). Хвостовой шум/бормотание уходит."""
         words = self._recognize(wav)
         if not words:
-            return wav, 1.0
-        start = max(0.0, words[0].start - 0.08)
-        end = min(len(wav) / self.sr, words[-1].end + 0.25)
-        return wav[int(start * self.sr):int(end * self.sr)], text_error(text, words)
+            return wav, 1.0, []
+        first = int(max(0.0, words[0].start - 0.08) * self.sr)
+        last = int(min(len(wav) / self.sr, words[-1].end + 0.25) * self.sr)
+        shift = first / self.sr
+        kept = [Word(w.text, max(0.0, w.start - shift), max(0.0, w.end - shift)) for w in words]
+        return wav[first:last], text_error(text, words), kept
 
-    def _generate_checked(self, text: str, params: dict, voice: Path | None, seed: int) -> np.ndarray:
+    def _generate_checked(self, text: str, params: dict, voice: Path | None,
+                          seed: int) -> tuple[np.ndarray, list[Word]]:
         attempts = self.tts_cfg["max_retries"] + 1
-        best: tuple[float, np.ndarray] | None = None
+        best: tuple[float, np.ndarray, list[Word]] | None = None
         for attempt in range(attempts):
             self._seed(seed + attempt)
             wav = self._trim(self._raw_generate(text, params, voice))
-            error = 0.0
+            error, words = 0.0, []
             if self.tts_cfg["verify"]:
-                wav, error = self._verify(wav, text)
+                wav, error, words = self._verify(wav, text)
             seconds = len(wav) / self.sr
             plausible = plausible_duration(text, seconds)
             if plausible and error <= self.tts_cfg["max_text_error"]:
-                return wav
+                return wav, words
             log.warning("Кусок не прошёл проверку (ошибка распознавания %.0f%%, %.1f с%s) — попытка %d/%d: %r",
                         error * 100, seconds, "" if plausible else ", неправдоподобная длина",
                         attempt + 1, attempts, text[:60])
             score = error + (0 if plausible else 1)
             if best is None or score < best[0]:
-                best = (score, wav)
-        return best[1]
+                best = (score, wav, words)
+        return best[1], best[2]
+
+    def synthesize_with_words(self, text: str, params: dict, voice: Path | None = None,
+                              seed: int | None = None) -> tuple[np.ndarray, str, list[Word]]:
+        """Текст → (моно float32 с частотой self.sr, текст с ударениями, распознанные слова
+        с таймкодами от начала аудио). Слова пустые, если проверка whisper'ом выключена."""
+        seed = self.tts_cfg["seed"] if seed is None else seed
+        stressed = self.stress(normalize_for_tts(text, self.tts_cfg["language_id"]))
+        parts, words, cursor = [], [], 0
+        for i, chunk in enumerate(split_into_chunks(stressed, self.tts_cfg["max_chars_per_chunk"])):
+            if parts:
+                pause = np.zeros(int(self.tts_cfg["pause_between_chunks_ms"] / 1000 * self.sr), np.float32)
+                parts.append(pause)
+                cursor += len(pause)
+            wav, chunk_words = self._generate_checked(chunk, params, voice, seed + 100 * i)
+            offset = cursor / self.sr
+            words += [Word(w.text, w.start + offset, w.end + offset) for w in chunk_words]
+            parts.append(wav)
+            cursor += len(wav)
+        audio = np.concatenate(parts) if parts else np.zeros(0, np.float32)
+        return audio, stressed, words
 
     def synthesize(self, text: str, params: dict, voice: Path | None = None,
                    seed: int | None = None) -> tuple[np.ndarray, str]:
         """Текст → (моно float32 с частотой self.sr, текст с ударениями)."""
-        seed = self.tts_cfg["seed"] if seed is None else seed
-        stressed = self.stress(normalize_for_tts(text, self.tts_cfg["language_id"]))
-        parts = []
-        for i, chunk in enumerate(split_into_chunks(stressed, self.tts_cfg["max_chars_per_chunk"])):
-            if parts:
-                parts.append(np.zeros(int(self.tts_cfg["pause_between_chunks_ms"] / 1000 * self.sr), np.float32))
-            parts.append(self._generate_checked(chunk, params, voice, seed + 100 * i))
-        return (np.concatenate(parts) if parts else np.zeros(0, np.float32)), stressed
+        audio, stressed, _ = self.synthesize_with_words(text, params, voice, seed)
+        return audio, stressed

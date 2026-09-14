@@ -19,7 +19,7 @@ from pathlib import Path
 
 from core.config import load_config
 from core.scene import rel_path
-from pipeline.worker import open_queue, run_job, run_worker
+from pipeline.worker import open_queue, run_jobs, run_worker
 
 
 def _enqueue(cfg, kind: str, payloads: list[dict]) -> None:
@@ -86,13 +86,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("job_id", type=int)
 
     p = sub.add_parser("job", help=argparse.SUPPRESS)
-    p.add_argument("job_id", type=int)
+    p.add_argument("job_ids", type=int, nargs="+")
 
     args = parser.parse_args(argv)
     cfg = load_config(args.profile)
 
     if args.cmd == "job":
-        return run_job(args.job_id, cfg)
+        return run_jobs(args.job_ids, cfg)
     if args.cmd == "status":
         return cmd_status(args, cfg)
     if args.cmd == "retry":

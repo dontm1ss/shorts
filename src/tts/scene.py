@@ -10,6 +10,7 @@ import soundfile as sf
 
 from core.config import ROOT
 from core.scene import SceneError, rel_path, validate_scene, work_dir
+from subtitles.align import Word, load_words, save_words
 from tts.engine import TTSEngine
 
 log = logging.getLogger(__name__)
@@ -52,10 +53,10 @@ def synthesize_scene(scene: dict, engine: TTSEngine, preset: str | None = None,
         log.warning("Нет референс-голоса для пола %s (tts.voices в config/base.toml) — "
                     "эти роли озвучит встроенный голос", ", ".join(missing))
 
-    parts, cursor = [], 0
+    parts, cursor, all_words = [], 0, []
     for i, line in enumerate(scene["script"]):
         voice = resolve_voice(line["speaker"], voices, genders.get(line["speaker"]))
-        audio, stressed = engine.synthesize(line["text"], params, voice, seed=seed + 1000 * i)
+        audio, stressed, words = engine.synthesize_with_words(line["text"], params, voice, seed=seed + 1000 * i)
         sr = engine.sr
         if i:
             gap = np.zeros(int(tts_cfg["pause_between_lines_ms"] / 1000 * sr), np.float32)
@@ -64,6 +65,8 @@ def synthesize_scene(scene: dict, engine: TTSEngine, preset: str | None = None,
         line["stressed_text"] = stressed
         line["timestamp_ms"] = round(cursor / sr * 1000)
         line["duration_ms"] = round(len(audio) / sr * 1000)
+        offset = cursor / sr
+        all_words += [Word(w.text, w.start + offset, w.end + offset, i) for w in words]
         parts.append(audio)
         cursor += len(audio)
 
@@ -79,6 +82,11 @@ def synthesize_scene(scene: dict, engine: TTSEngine, preset: str | None = None,
         "duration_ms": round(len(full) / engine.sr * 1000),
         "tts_params": params,
     }
+    if all_words:
+        # Слова из проверки кусков whisper'ом — готовые таймкоды для субтитров
+        words_path = out_path.with_suffix(".words.json")
+        save_words(all_words, words_path)
+        scene["audio"]["words_path"] = rel_path(words_path)
     return validate_scene(scene)
 
 
@@ -101,4 +109,7 @@ def stretch_scene_audio(scene: dict, target_ms: int, max_change: float = 0.07) -
         line["timestamp_ms"] = round(line["timestamp_ms"] / rate)
         line["duration_ms"] = round(line["duration_ms"] / rate)
     scene["audio"]["duration_ms"] = round(len(stretched) / sr * 1000)
+    if words_path := scene["audio"].get("words_path"):
+        words = load_words(abs_path(words_path))
+        save_words([Word(w.text, w.start / rate, w.end / rate, w.line) for w in words], abs_path(words_path))
     return validate_scene(scene)
