@@ -35,7 +35,9 @@ manifest = "output/manifest.json"                   # список готовы�
 
 [deepseek]
 base_url = "https://api.deepseek.com"
-model = "deepseek-chat"
+# deepseek-chat больше нет в списке моделей API; deepseek-flash и deepseek-chat 2026-09-14 висели без ответа.
+# v4-pro — рассуждающая: сначала reasoning_content, потом ответ (temperature она игнорирует)
+model = "deepseek-v4-pro"
 temperature = 1.0
 # Сколько ждать начала ответа. При перегрузке DeepSeek не отвечает ошибкой, а держит соединение
 # пустыми строками до 30 минут — после timeout_s без текста запрос перезапускается (scripting/client.py).

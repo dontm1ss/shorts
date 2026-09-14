@@ -243,6 +243,11 @@ def test_client_keeps_long_answer_and_gives_up(dev_cfg, monkeypatch):
     dev_cfg["deepseek"]["api_key"] = "test"
     assert DeepSeekClient(dev_cfg).chat_json("s", "u") == {"a": 1}     # 80 с, но ответ шёл — не оборван
 
+    import json
+    thinking = [b"data: " + json.dumps({"choices": [{"delta": {"reasoning_content": "хм"}}]}).encode()] * 6
+    monkeypatch.setattr(requests, "post", lambda *a, **kw: FakeStream(thinking + sse('{"b": 2}')))
+    assert DeepSeekClient(dev_cfg).chat_json("s", "u") == {"b": 2}     # v4-pro 2 минуты думала — не оборвана
+
     monkeypatch.setattr(requests, "post", lambda *a, **kw: FakeStream([b""] * 20))
     with pytest.raises(DeepSeekError, match="нет ответа за 60 с"):
         DeepSeekClient(dev_cfg).chat_json("s", "u")

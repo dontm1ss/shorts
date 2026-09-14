@@ -3,8 +3,8 @@
 Ответ читается потоком (stream): при перегрузке DeepSeek не отвечает ошибкой, а держит
 соединение пустыми keep-alive строками до 30 минут — обычный таймаут чтения их не замечает,
 и задача висела бы бесконечно. Поток показывает, пишет ли модель на самом деле: нет первого
-куска текста за deepseek.timeout_s — запрос перезапускается. Начавшийся ответ не обрывается,
-пока текст идёт."""
+куска текста (ответа или рассуждений — reasoning_content у deepseek-v4-pro) за deepseek.timeout_s —
+запрос перезапускается. Начавшийся ответ не обрывается, пока текст идёт."""
 from __future__ import annotations
 
 import json
@@ -44,6 +44,7 @@ class DeepSeekClient:
         """Один запрос потоком → текст ответа модели."""
         start = time.monotonic()
         parts: list[str] = []
+        started = False                  # модель начала писать — ответ или рассуждения
         try:
             with requests.post(self.url, json={**payload, "stream": True}, stream=True,
                                timeout=(15, _STALL_S), headers={"Authorization": f"Bearer {self._key}"}) as resp:
@@ -53,7 +54,7 @@ class DeepSeekClient:
                     raise DeepSeekError(f"HTTP {resp.status_code}: {resp.text[:300]}")
                 for line in resp.iter_lines():
                     elapsed = time.monotonic() - start
-                    if not parts and elapsed > self.timeout:
+                    if not started and elapsed > self.timeout:
                         raise _Retry(f"нет ответа за {self.timeout} с (DeepSeek перегружен)")
                     if elapsed > _TOTAL_S:
                         raise _Retry(f"ответ не закончился за {_TOTAL_S} с")
@@ -62,8 +63,11 @@ class DeepSeekClient:
                     data = line[5:].strip()
                     if data == b"[DONE]":
                         break
-                    if text := json.loads(data)["choices"][0]["delta"].get("content"):
-                        parts.append(text)
+                    for choice in json.loads(data).get("choices", []):
+                        delta = choice.get("delta", {})
+                        started = started or bool(delta.get("content") or delta.get("reasoning_content"))
+                        if delta.get("content"):
+                            parts.append(delta["content"])
         except requests.RequestException as e:
             raise _Retry(f"сеть: {type(e).__name__}") from e
         return "".join(parts)
