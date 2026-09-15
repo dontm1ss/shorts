@@ -9,7 +9,11 @@
 Модели: основная (deepseek.model, flash); если она не ответила или вернула ошибку — запасная
 (deepseek.fallback_model, v4-pro). После сбоя основной следующие fallback_cooldown_s секунд
 запросы сразу идут в запасную (отметка в paths.deepseek_state — задачи идут разными процессами),
-чтобы каждая задача не ждала минуту зависшую основную."""
+чтобы каждая задача не ждала минуту зависшую основную.
+
+Нет связи (VPN переподключается, прокси отказывает) — модель ни при чём: запрос повторяется
+до deepseek.network_wait_s, попытки не тратятся и на запасную модель не переключаемся. Раньше
+короткий обрыв VPN за полминуты валил все задачи сценариев подряд."""
 from __future__ import annotations
 
 import json
@@ -40,6 +44,10 @@ class _Retry(Exception):
     """Попытка не удалась, но можно повторить."""
 
 
+class _Offline(_Retry):
+    """До DeepSeek не достучаться (сеть, прокси, VPN) — ждать связь, модель не виновата."""
+
+
 class DeepSeekClient:
     def __init__(self, cfg: dict):
         d = cfg["deepseek"]
@@ -53,6 +61,7 @@ class DeepSeekClient:
         self.temperature = d["temperature"]
         self.timeout = d["timeout_s"]
         self.max_retries = d["max_retries"]
+        self.network_wait_s = d.get("network_wait_s", 300)
         self._state = ROOT / cfg["paths"]["deepseek_state"]
 
     # --- какая модель сейчас -----------------------------------------------------
@@ -107,8 +116,10 @@ class DeepSeekClient:
                         started = started or bool(delta.get("content") or delta.get("reasoning_content"))
                         if delta.get("content"):
                             parts.append(delta["content"])
+        except (requests.ConnectionError, requests.exceptions.ChunkedEncodingError) as e:
+            raise _Offline(f"сеть: {type(e).__name__}") from e     # ProxyError, ConnectTimeout, обрыв потока
         except requests.RequestException as e:
-            raise _Retry(f"сеть: {type(e).__name__}") from e
+            raise _Retry(f"сеть: {type(e).__name__}") from e       # ReadTimeout — поток замер
         return "".join(parts)
 
     def chat_json(self, system: str, user: str, temperature: float | None = None) -> dict:
@@ -119,17 +130,26 @@ class DeepSeekClient:
             "response_format": {"type": "json_object"},
             "temperature": self.temperature if temperature is None else temperature,
         }
-        last_error, primary_failed, switched = "нет попыток", False, False
-        for attempt in range(self.max_retries):
+        last_error, primary_failed, pause = "нет попыток", False, False
+        attempt, offline_since, waits = 0, None, 0
+        while attempt < self.max_retries:
             model = self._pick_model(primary_failed)
-            if attempt and not switched:             # на запасную сразу после сбоя основной — без паузы
+            if pause:
                 time.sleep(2 ** attempt)
-            switched = False
             start = time.monotonic()
             try:
                 result = json.loads(self._request({**payload, "model": model}))
                 log.info("DeepSeek: ответ %s за %.0f с", model, time.monotonic() - start)
                 return result
+            except _Offline as e:
+                if offline_since is None:
+                    offline_since = time.monotonic()
+                    log.warning("DeepSeek недоступен (%s) — жду связь до %d с", e, self.network_wait_s)
+                if time.monotonic() - offline_since >= self.network_wait_s:
+                    raise DeepSeekError(f"Нет связи с DeepSeek {self.network_wait_s} с ({e})") from None
+                time.sleep(min(30, 5 * 2 ** waits))
+                waits, pause = waits + 1, False
+                continue                              # попытка не потрачена, модель та же
             except _Retry as e:
                 last_error = str(e)
             except json.JSONDecodeError:
@@ -138,12 +158,15 @@ class DeepSeekClient:
                 if model != self.model or not self.fallback_model or e.status in _FATAL_STATUS:
                     raise
                 last_error = str(e)                  # основной модели нет / отказ — на запасную
+            offline_since, waits = None, 0
+            attempt += 1
             if model == self.model and self.fallback_model:
-                primary_failed = switched = True
+                primary_failed, pause = True, False  # на запасную сразу после сбоя основной — без паузы
                 if last_error != "ответ не JSON":    # один битый ответ — не повод отключать основную
                     self._mark_primary_down(last_error)
                 log.warning("DeepSeek %s: %s — переключаюсь на %s", model, last_error, self.fallback_model)
             else:
-                log.warning("DeepSeek %s: %s — попытка %d/%d%s", model, last_error, attempt + 1, self.max_retries,
-                            ", повторяю" if attempt + 1 < self.max_retries else "")
+                pause = True
+                log.warning("DeepSeek %s: %s — попытка %d/%d%s", model, last_error, attempt, self.max_retries,
+                            ", повторяю" if attempt < self.max_retries else "")
         raise DeepSeekError(f"DeepSeek не ответил после {self.max_retries} попыток ({last_error})")

@@ -49,6 +49,9 @@ temperature = 1.0
 # Начавшийся ответ не обрывается, пока текст идёт.
 timeout_s = 60
 max_retries = 3
+# Нет связи с DeepSeek (VPN переподключается, прокси отказывает) — ждать до network_wait_s,
+# не тратя попытки и не переключаясь на запасную модель.
+network_wait_s = 300
 # api_key — только из .env (DEEPSEEK_API_KEY)
 
 [tts]

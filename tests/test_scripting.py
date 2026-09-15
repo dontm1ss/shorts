@@ -291,6 +291,38 @@ def test_flash_first_pro_only_when_flash_fails(dev_cfg, fake_api):
     assert fake_api.calls == ["deepseek-flash"]                            # пауза прошла — снова flash
 
 
+def test_network_outage_waited_out_without_fallback(dev_cfg, monkeypatch):
+    """Обрыв VPN: ProxyError не тратит попытки и не переключает на v4-pro — ждём связь."""
+    from pathlib import Path
+
+    import requests
+    import scripting.client as client_mod
+    sleeps = []
+    monkeypatch.setattr(client_mod.time, "sleep", sleeps.append)
+    clock = iter(range(0, 1_000_000, 10))
+    monkeypatch.setattr(client_mod.time, "monotonic", lambda: next(clock))
+    dev_cfg["deepseek"]["api_key"] = "test"
+    responses, models = [], []
+
+    def post(*a, **kw):
+        models.append(kw["json"]["model"])
+        item = responses.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    monkeypatch.setattr(requests, "post", post)
+    responses += [requests.exceptions.ProxyError("VPN")] * 5 + [FakeStream(sse('{"ok": 1}'))]
+    assert DeepSeekClient(dev_cfg).chat_json("s", "u") == {"ok": 1}
+    assert models == ["deepseek-flash"] * 6                                # 5 обрывов > max_retries = 3
+    assert sleeps == [5, 10, 20, 30, 30]
+    assert not Path(dev_cfg["paths"]["deepseek_state"]).exists()          # flash не помечен сломанным
+
+    responses[:] = [requests.exceptions.ConnectionError("нет сети")] * 100
+    with pytest.raises(DeepSeekError, match="Нет связи с DeepSeek 300 с"):
+        DeepSeekClient(dev_cfg).chat_json("s", "u")                       # связь так и не вернулась
+
+
 def test_fallback_on_flash_error_not_on_bad_key(dev_cfg, fake_api):
     from pathlib import Path
     state = Path(dev_cfg["paths"]["deepseek_state"])
