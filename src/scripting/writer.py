@@ -144,14 +144,22 @@ def invent_story(client: DeepSeekClient, cfg: dict, topic: str | None = None) ->
     return story
 
 
-def generate_drama(client: DeepSeekClient, cfg: dict, topic: str | None = None) -> dict:
-    drama_params = params.drama_params(cfg)
+def generate_drama(client: DeepSeekClient, cfg: dict, topic: str | None = None, loop: bool = False) -> dict:
+    """loop — петля: последнее сообщение переходит в первое, ролик крутится по кругу без заметного
+    стыка; в ответе DeepSeek описывает стык (поле loop → loop_idea)."""
+    drama_params = params.drama_params(cfg, loop=loop)
     limits = _limits(cfg, _EST_DRAMA_MESSAGES)
     system = prompts.DRAMA_SYSTEM.format(**limits, min_messages=DRAMA_MESSAGES[0], max_messages=DRAMA_MESSAGES[1],
                                          variety=params.format_drama_variety(drama_params, topic),
-                                         emotions=prompts.DRAMA_EMOTION_RULES)
+                                         emotions=prompts.DRAMA_EMOTION_RULES,
+                                         loop=f"\n{prompts.DRAMA_LOOP_RULES}\n" if loop else "",
+                                         loop_field=prompts.DRAMA_LOOP_FIELD if loop else "")
     user = prompts.DRAMA_USER_TOPIC.format(topic=topic) if topic else prompts.DRAMA_USER_FREE
-    drama = _check_drama(client.chat_json(system, user))
+    raw = client.chat_json(system, user)
+    drama = _check_drama(raw)
+    if loop:
+        idea = raw.get("loop")
+        drama.update(loop=True, loop_idea=" ".join(idea.split())[:300] if isinstance(idea, str) else "")
     if drama["messages"]:
         params.record_drama(cfg, drama["messages"][0]["text"], drama_params)
     return drama
@@ -192,8 +200,12 @@ def adjust_drama(drama: dict, current_s: float, client: DeepSeekClient, cfg: dic
                                                 target_words=target_words, current_words=current_words,
                                                 style_reminder=prompts.STYLE_REMINDER,
                                                 format_rules=prompts.FORMAT_RULES,
-                                                emotion_rule=prompts.ADJUST_EMOTION_RULE.format(unit="сообщения"))
-    return _check_drama(client.chat_json(system, json.dumps(drama, ensure_ascii=False), 0.7))
+                                                emotion_rule=prompts.ADJUST_EMOTION_RULE.format(unit="сообщения"),
+                                                loop_rule=prompts.ADJUST_LOOP_RULE if drama.get("loop") else "")
+    new = _check_drama(client.chat_json(system, json.dumps(drama, ensure_ascii=False), 0.7))
+    if drama.get("loop"):   # петля остаётся петлёй — стык тот же
+        new.update(loop=True, loop_idea=drama.get("loop_idea", ""))
+    return new
 
 
 # --- сцены ----------------------------------------------------------------------
@@ -222,6 +234,8 @@ def drama_scene(drama: dict, cfg: dict, topic: str | None = None) -> dict:
                        for m in drama["messages"]]
     scene["meta"] = {"title": drama["title"], "contacts": drama["contacts"], "topic": topic or "",
                      "genders": _genders(drama.get("genders"))}
+    if drama.get("loop"):
+        scene["meta"].update(loop=True, loop_idea=drama.get("loop_idea", ""))
     return validate_scene(scene)
 
 
@@ -235,10 +249,13 @@ def scene_story(scene: dict) -> dict:
 
 def scene_drama(scene: dict) -> dict:
     meta = scene.get("meta", {})
-    return {"title": meta.get("title", ""), "contacts": meta.get("contacts", {"A": "Контакт", "B": "Я"}),
-            "genders": meta.get("genders", {}),
-            "messages": [{"speaker": l["speaker"], "emotion": l.get("emotion", DEFAULT_EMOTION), "text": l["text"]}
-                         for l in scene["script"]]}
+    drama = {"title": meta.get("title", ""), "contacts": meta.get("contacts", {"A": "Контакт", "B": "Я"}),
+             "genders": meta.get("genders", {}),
+             "messages": [{"speaker": l["speaker"], "emotion": l.get("emotion", DEFAULT_EMOTION), "text": l["text"]}
+                          for l in scene["script"]]}
+    if meta.get("loop"):
+        drama.update(loop=True, loop_idea=meta.get("loop_idea", ""))
+    return drama
 
 
 def rewrite_scene_length(scene: dict, current_s: float, client: DeepSeekClient, cfg: dict) -> dict:

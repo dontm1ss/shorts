@@ -116,6 +116,9 @@ input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 
 .gen label { flex: 1 1 140px; font-weight: 600; }
 .gen input[type="number"] { width: 64px; }
 .gen .topic { flex: 1 1 180px; }
+/* переписка-петля: конец переходит в начало */
+.gen .loop-check { flex: none; display: flex; align-items: center; gap: 6px; font-weight: 400; font-size: 14px; cursor: pointer; }
+.gen .loop-check input { width: 18px; height: 18px; margin: 0; padding: 0; accent-color: var(--accent); cursor: pointer; }
 
 /* автоодобрение: переключатель */
 .auto {
@@ -224,6 +227,7 @@ main { max-width: 900px; margin: 0 auto; padding: 4px 12px 40px; display: grid; 
 }
 .badge.ok { color: var(--ok); border-color: currentColor; }
 .badge.warn { color: var(--warn); border-color: currentColor; }
+.badge.loop { color: var(--accent); border-color: currentColor; }
 
 .card-body { padding: 4px 14px 10px; display: grid; gap: 8px; }
 
@@ -265,6 +269,15 @@ select.emo:not([data-emotion="neutral"]) { color: var(--accent); border-color: c
 }
 .msg.left textarea { background: var(--bubble-gray); }
 .msg.right textarea { background: var(--bubble-blue); color: #fff; text-align: left; }
+
+/* стык петли: после последнего сообщения — снова первое (полупрозрачное, только для чтения) */
+.seam { display: grid; gap: 6px; margin-top: 4px; padding-top: 8px; border-top: 1px dashed var(--line); }
+.seam-label, .seam-idea { font-size: 12px; color: var(--muted); }
+.seam-label { text-align: center; }
+.msg.ghost { opacity: 0.5; }
+.ghost-bubble { border-radius: 16px; padding: 8px 12px; line-height: 1.35; text-align: left; white-space: pre-wrap; word-break: break-word; }
+.msg.left .ghost-bubble { background: var(--bubble-gray); }
+.msg.right .ghost-bubble { background: var(--bubble-blue); color: #fff; }
 
 .card-foot {
   display: flex;

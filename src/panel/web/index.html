@@ -26,6 +26,8 @@
     <label>Переписки</label>
     <input type="number" name="count" min="1" max="20" value="3" aria-label="сколько переписок">
     <input type="text" name="topic" placeholder="тема — необязательно" class="topic">
+    <label class="loop-check" title="Конец переписки переходит в начало: ролик крутится по кругу, и зритель не сразу замечает, что смотрит второй раз">
+      <input type="checkbox" name="loop"> ↻ петля</label>
     <button type="submit">Сгенерировать</button>
   </form>
   <label class="auto" id="auto-row" hidden>

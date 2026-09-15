@@ -91,6 +91,19 @@ def test_format_drama_variety(dev_cfg):
     assert "Тема конфликта" not in params.format_drama_variety(p, topic="подруга слила переписку")
 
 
+def test_loop_drama_params_replace_finale_with_seam(dev_cfg):
+    """Петля: вместо финала — стык (как последнее сообщение переходит в первое), без недавних повторов."""
+    p = params.drama_params(dev_cfg, loop=True)
+    assert p["seam"] in params.LOOP_SEAMS and "finale" not in p
+    text = params.format_drama_variety(p)
+    assert f"Стык петли: {p['seam']}." in text and "Финал: " not in text
+    params.record_drama(dev_cfg, "Первое сообщение.", p)
+    assert params._recent(dev_cfg, "imessage_drama", "seam") == [p["seam"]]
+    assert params.drama_params(dev_cfg, loop=True)["seam"] != p["seam"]    # следующая петля — другой стык
+    plain = params.drama_params(dev_cfg)
+    assert "seam" not in plain and "Финал: " in params.format_drama_variety(plain)
+
+
 def test_owner_prompts_with_config_numbers():
     """Промпты владельца: числа длины — подстановки из конфига, в конце — параметры генерации."""
     for template in (prompts.STORY_SYSTEM, prompts.DRAMA_SYSTEM):

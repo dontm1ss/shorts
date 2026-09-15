@@ -86,6 +86,17 @@ RHYTHMS_DRAMA = [
 ]
 TWIST_COUNTS = (1, 2, 3)   # «меняй количество поворотов»
 
+# Петля (переписка крутится по кругу): как последнее сообщение переходит в первое. Заменяет финал —
+# у петли его нет, последнее сообщение ведёт прямо в первое
+LOOP_SEAMS = [
+    "последнее сообщение — вопрос, а первое сообщение переписки — прямой ответ на него",
+    "последнее сообщение — признание или новость, а первое — реакция на неё",
+    "последнее сообщение — просьба, угроза или ультиматум, а первое — ответ на них",
+    "последнее сообщение обещает что-то рассказать или показать, а первое — это оно и есть",
+    "финальный поворот объясняет, зачем было отправлено первое сообщение, и последнее подводит прямо к нему",
+    "герои по кругу возвращаются в ту же ситуацию, с которой всё началось, и первое сообщение звучит как их следующий ход",
+]
+
 # --- пулы вариантов (истории от первого лица) ------------------------------------
 
 OPENINGS_STORY = [
@@ -224,13 +235,14 @@ def story_params(cfg: dict) -> dict:
     }
 
 
-def drama_params(cfg: dict) -> dict:
-    """Параметры для новой переписки + крючки последних переписок."""
+def drama_params(cfg: dict, loop: bool = False) -> dict:
+    """Параметры для новой переписки + крючки последних переписок. loop — петля: вместо финала
+    выбирается стык (как последнее сообщение переходит в первое)."""
     recent_archetypes = _recent(cfg, "imessage_drama", "archetype_a") + _recent(cfg, "imessage_drama", "archetype_b")
     recent_speech = _recent(cfg, "imessage_drama", "speech_a") + _recent(cfg, "imessage_drama", "speech_b")
     archetype_a, archetype_b = _pick(ARCHETYPES, recent_archetypes, n=2)
     speech_a, speech_b = _pick(SPEECH_MANNERS, recent_speech, n=2)
-    return {
+    chosen = {
         "opening": _pick(OPENINGS_DRAMA, _recent(cfg, "imessage_drama", "opening"))[0],
         "conflict": _pick(CONFLICT_DOMAINS, _recent(cfg, "imessage_drama", "conflict"))[0],
         "archetype_a": archetype_a, "archetype_b": archetype_b,
@@ -238,14 +250,20 @@ def drama_params(cfg: dict) -> dict:
         "twists": _pick(TWISTS, _recent(cfg, "imessage_drama", "twists"), n=random.choice(TWIST_COUNTS)),
         **_common_params(cfg, "imessage_drama", RHYTHMS_DRAMA),
     }
+    if loop:
+        del chosen["finale"]
+        chosen["seam"] = _pick(LOOP_SEAMS, _recent(cfg, "imessage_drama", "seam"))[0]
+    return chosen
 
 
 def _format_variety_block(params: dict, extra_lines: list[str]) -> str:
+    ending = (f"Стык петли: {params['seam']}. Последнее сообщение — сильное, но не финал: оно ведёт прямо в первое."
+              if "seam" in params else f"Финал: {params['finale']}. Последняя реплика — самая сильная.")
     lines = "\n".join(f"- {line}" for line in extra_lines + [
         f"Ритм: {params['rhythm']}.",
         f"Порядок раскрытия информации: {params['reveal']}.",
         f"Режимы этого текста (из «иногда»): {'; '.join(params['modes'])}.",
-        f"Финал: {params['finale']}. Последняя реплика — самая сильная.",
+        ending,
     ])
     block = f"Параметры именно этого текста (у каждой генерации свои):\n{lines}"
     if params["recent_hooks"]:

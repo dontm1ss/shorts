@@ -264,6 +264,33 @@ def test_api_generate_clamps_count(cfg):
     assert client.post("/api/generate", json={"kind": "x"}, headers={"X-Panel": "1"}).status_code == 400
 
 
+def test_api_generate_loop(cfg):
+    """Галочка «петля» у переписок: задачи сценариев с loop, у историй петли нет."""
+    client = TestClient(panel.app.create_app(cfg))
+    x = {"X-Panel": "1"}
+    r = client.post("/api/generate", json={"kind": "drama", "count": 2, "loop": True}, headers=x)
+    queue = open_queue(cfg)
+    assert [queue.get(i).payload for i in r.json()["jobs"]] == [{"topic": None, "loop": True}] * 2
+    queue.close()
+    assert client.post("/api/generate", json={"kind": "story", "loop": True}, headers=x).status_code == 400
+
+
+def test_loop_card_and_video(cfg):
+    client = TestClient(panel.app.create_app(cfg))
+    plain = make_scene(cfg, kind="imessage_drama", created="2026-09-15T09:00:00Z")
+    scene = make_scene(cfg, kind="imessage_drama", created="2026-09-15T10:00:00Z")
+    scene["meta"].update(loop=True, loop_idea="«О чём ты?» — и первое сообщение отвечает")
+    save_scene(scene, scene_path(cfg, scene["scene_id"]))
+    cards = client.get("/api/scenes?status=pending").json()
+    assert [(c["scene_id"], c["loop"]) for c in cards] == [(scene["scene_id"], True), (plain["scene_id"], False)]
+    assert cards[0]["loop_idea"].startswith("«О чём ты?»")
+
+    manifest.record(cfg, scene, {"output": "output/videos/loop.mp4", "duration_s": 55.3})
+    manifest.record(cfg, plain, {"output": "output/videos/plain.mp4", "duration_s": 57.0})
+    videos = {v["scene_id"]: v for v in client.get("/api/videos").json()}
+    assert videos[scene["scene_id"]]["loop"] is True and "loop" not in videos[plain["scene_id"]]
+
+
 def test_api_jobs_have_timestamps(cfg):
     client = TestClient(panel.app.create_app(cfg))
     queue = open_queue(cfg)

@@ -46,6 +46,12 @@ def save_scene(scene: dict, path: Path) -> None:
     path.write_text(json.dumps(scene, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def is_loop(scene: dict) -> bool:
+    """Петля (meta.loop): ролик крутится по кругу — конец сценария переходит в начало, без хвоста
+    и заставки, и зритель не сразу замечает повтор (compositor, imessage)."""
+    return bool(scene.get("meta", {}).get("loop"))
+
+
 def rel_path(path: Path) -> str:
     """Путь для записи в сцену: относительно корня репозитория, с прямыми слэшами."""
     path = Path(path).resolve()

@@ -123,6 +123,14 @@
           "description": "пол героев по ролям — выбор голоса озвучки (tts.voices.female / male)",
           "propertyNames": { "pattern": "^(narrator|[A-Z])$" },
           "additionalProperties": { "enum": ["female", "male"] }
+        },
+        "loop": {
+          "type": "boolean",
+          "description": "петля: ролик крутится по кругу — последнее сообщение переходит в первое, в конце нет хвоста, на стыке переписка продолжается (imessage, compositor)"
+        },
+        "loop_idea": {
+          "type": "string",
+          "description": "как DeepSeek склеил конец петли с началом — одной фразой, для отбора в панели"
         }
       }
     },

@@ -2,7 +2,7 @@
 
     venv\\Scripts\\python -m pipeline story --count 3 [--topic "..."]   # DeepSeek придумывает истории сам
     venv\\Scripts\\python -m pipeline story --post data/forum-posts/reddit_xxx.json   # пересказ поста (старый путь)
-    venv\\Scripts\\python -m pipeline drama [--topic "..."] [--count 2]
+    venv\\Scripts\\python -m pipeline drama [--topic "..."] [--count 2] [--loop]   # --loop: конец → начало
     venv\\Scripts\\python -m pipeline clips data/source-videos/film.mp4 [--limit 5] [--no-files]
     venv\\Scripts\\python -m pipeline worker [--watch]              # выполнить очередь
     venv\\Scripts\\python -m pipeline status | retry <id>
@@ -71,6 +71,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("drama", help="iMessage-драмы")
     p.add_argument("--topic")
     p.add_argument("--count", type=int, default=1)
+    p.add_argument("--loop", action="store_true",
+                   help="петля: конец переписки переходит в начало, ролик крутится по кругу")
     p.add_argument("--no-run", action="store_true")
 
     p = sub.add_parser("clips", help="нарезка собственных видео")
@@ -108,7 +110,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "story":
         _enqueue(cfg, "script_story", cmd_story(args, cfg))
     elif args.cmd == "drama":
-        _enqueue(cfg, "script_drama", [{"topic": args.topic}] * args.count)
+        payload = {"topic": args.topic, "loop": True} if args.loop else {"topic": args.topic}
+        _enqueue(cfg, "script_drama", [payload] * args.count)
     elif args.cmd == "clips":
         from video_clipper.clipper import find_source_videos
         videos = find_source_videos(cfg, args.source) if args.source.is_dir() else [args.source]

@@ -6,6 +6,8 @@
   → озвучка Chatterbox → крупные субтитры с пословной подсветкой → фоновое видео на весь кадр.
 - **iMessage-драма** — переписка по ролям (DeepSeek) → озвучка → покадровая запись переписки
   в стиле iMessage (только сообщения: пузыри, «печатает…», «Прочитано») → переписка сверху, паркур снизу.
+  **Петля** (галочка в панели, `--loop`): последнее сообщение переходит в первое, ролик крутится
+  по кругу без заметного стыка — зритель не сразу понимает, что смотрит второй раз.
 - **Нарезка клипов** — собственные видео режутся окном 30 с с шагом 2 с → субтитры по звуку →
   клип сверху, паркур снизу.
 
@@ -38,6 +40,12 @@ venv\Scripts\python -m panel
 N историй / переписок», готовые ролики с плеером и очередь задач. Отбор выключается
 `review.enabled = false` в `config/base.toml`.
 
+Галочка **«↻ петля»** у переписок — DeepSeek пишет переписку, конец которой переходит в начало.
+В карточке под последним сообщением показано первое (как его увидит зритель на следующем круге)
+и одной фразой — как DeepSeek склеил стык. В ролике-петле нет хвоста и заголовка «iMessage»:
+в первом кадре на экране уже конец прошлого круга, фон в последние 0,8 с плавно переходит
+в свои первые кадры, и повтор выглядит как очередное сообщение. Плеер в панели крутит петли по кругу.
+
 ```bash
 venv\Scripts\python -m panel                                     # http://127.0.0.1:8765
 powershell -ExecutionPolicy Bypass -File scripts\panel_online.ps1 # то же + доступ из интернета через сервер
@@ -56,6 +64,7 @@ powershell -ExecutionPolicy Bypass -File scripts\panel_online.ps1 # то же + 
 venv\Scripts\python -m pipeline story --count 3 --topic "сосед сверху"   # DeepSeek придумывает истории
 venv\Scripts\python -m pipeline story --post data\forum-posts\reddit_xxx.json   # пересказ поста (старый путь)
 venv\Scripts\python -m pipeline drama --topic "подруга слила переписку" --count 2
+venv\Scripts\python -m pipeline drama --loop --count 2                    # переписки-петли: конец → начало
 venv\Scripts\python -m pipeline clips data\source-videos\film.mp4 --limit 5
 venv\Scripts\python -m pipeline worker [--watch]                 # выполнить очередь
 venv\Scripts\python -m pipeline status                           # состояние задач
@@ -65,7 +74,7 @@ venv\Scripts\python -m pipeline retry 12                         # повтор�
 | Задача | Что делает |
 |---|---|
 | `script_story` | DeepSeek придумывает историю (или пересказывает пост, если он задан) → на отбор в панель |
-| `script_drama` | DeepSeek пишет переписку A/B |
+| `script_drama` | DeepSeek пишет переписку A/B (с `loop` — петлю: последнее сообщение ведёт в первое) |
 | `tts_synthesis` | озвучка; все готовые задачи — пачкой в одном процессе (модель грузится один раз) |
 | `subtitle_generation` | таймкоды из проверки озвучки (клипы — из одного распознавания исходника) → ASS/SRT; шрифт и цвет подсветки свои у каждой сцены |
 | `ui_render` | покадровая запись интерфейса iMessage (Playwright + системный Edge/Chrome) |

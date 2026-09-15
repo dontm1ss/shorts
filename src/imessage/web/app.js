@@ -13,6 +13,7 @@
   const BLUE_BOTTOM = [47, 118, 245];
 
   let D = null;
+  let ms = [];                   // сообщения в порядке на экране; у петли сначала прошлые круги
   const rows = [];
   const natural = [];
   let listEl, viewportEl, receiptEl, typingEl, dots;
@@ -33,28 +34,57 @@
     return "rgb(" + c.join(",") + ")";
   }
 
+  function makeRow(m, prev) {
+    const row = el("div", "row " + m.side);
+    row.style.paddingTop = (!prev ? 2 : prev.side === m.side ? 2 : 10) + "px";
+    row.appendChild(el("div", "bubble", m.text));
+    return row;
+  }
+
   window.init = function (data) {
     D = data;
     document.getElementById("phone").className = data.theme;
     listEl = document.getElementById("list");
     viewportEl = document.getElementById("viewport");
 
-    const stamp = el("div", "stamp");
-    stamp.appendChild(el("div", "service", "iMessage"));
-    const when = el("div");
-    when.appendChild(el("b", "", data.stamp_day));
-    when.appendChild(document.createTextNode(" " + data.stamp_time));
-    stamp.appendChild(when);
-    listEl.appendChild(stamp);
+    if (!data.loop) {   // у петли нет начала переписки — только разговор, который идёт по кругу
+      const stamp = el("div", "stamp");
+      stamp.appendChild(el("div", "service", "iMessage"));
+      const when = el("div");
+      when.appendChild(el("b", "", data.stamp_day));
+      when.appendChild(document.createTextNode(" " + data.stamp_time));
+      stamp.appendChild(when);
+      listEl.appendChild(stamp);
+    }
 
-    data.messages.forEach((m, i) => {
-      const prev = data.messages[i - 1];
-      const row = el("div", "row " + m.side);
-      row.style.paddingTop = (!prev ? 2 : prev.side === m.side ? 2 : 10) + "px";
-      row.appendChild(el("div", "bubble", m.text));
+    // у петли перед первым сообщением стоит последнее — отступы у всех кругов одинаковые
+    const own = data.messages;
+    const prevOf = (i) => (i ? own[i - 1] : data.loop ? own[own.length - 1] : null);
+    own.forEach((m, i) => {
+      const row = makeRow(m, prevOf(i));
       listEl.appendChild(row);
       rows.push(row);
     });
+    ms = own.slice();
+
+    if (data.loop) {
+      // Над перепиской — прошлые круги (те же сообщения на период раньше), пока не закроют экран.
+      // Тогда первый кадр такой же, как последний: переписка просто продолжается, повтора не видно
+      const lap = rows.reduce((h, row) => h + row.offsetHeight, 0);
+      const laps = Math.max(1, Math.ceil(viewportEl.clientHeight / Math.max(1, lap)));
+      const past = [];
+      const pastRows = [];
+      for (let k = laps; k >= 1; k--) {
+        own.forEach((m, i) => {
+          past.push({ ...m, appear_ms: m.appear_ms - k * data.total_ms,
+                      typing_start_ms: m.typing_start_ms - k * data.total_ms });
+          pastRows.push(makeRow(m, prevOf(i)));
+        });
+      }
+      pastRows.forEach((row) => listEl.insertBefore(row, rows[0]));
+      ms = past.concat(ms);
+      rows.unshift(...pastRows);
+    }
 
     receiptEl = el("div", "receipt");
     receiptEl.appendChild(el("b", "", data.receipt_label));
@@ -71,11 +101,10 @@
 
     // Естественная высота строк — для плавного «вырастания» пузыря при появлении
     rows.forEach((row) => natural.push(row.offsetHeight));
-    return { messages: rows.length };
+    return { messages: own.length };
   };
 
   window.renderAt = function (t) {
-    const ms = D.messages;
     const key = [];
 
     let lastVisible = -1;
@@ -111,12 +140,13 @@
     }
     key.push("v" + lastVisible);
 
-    // Собеседник «печатает» перед своим сообщением
-    const upcoming = ms[lastVisible + 1];
+    // Собеседник «печатает» перед своим сообщением; в конце петли — перед первым следующего круга
+    const upcoming = ms[lastVisible + 1] || D.wrap;
     const typing = !!upcoming && upcoming.side === "left" && t >= upcoming.typing_start_ms;
     typingEl.style.display = typing ? "" : "none";
     if (typing) {
-      const phase = Math.floor(t / DOT_STEP_MS) % 9;
+      // фаза — от начала набора: на стыке петли точки продолжают волну, а не прыгают
+      const phase = Math.floor((t - upcoming.typing_start_ms) / DOT_STEP_MS) % 9;
       dots.forEach((d, k) => {
         const x = (phase - k * 2 + 9) % 9;
         d.style.opacity = x < 3 ? [1, 0.75, 0.5][x] : 0.3;

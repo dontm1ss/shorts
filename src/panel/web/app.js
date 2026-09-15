@@ -103,6 +103,12 @@
     return el("span", { class: "badge " + (ok ? "ok" : "warn"), text: `≈ ${seconds} с` });
   }
 
+  // Петля: конец переписки переходит в начало, ролик крутится по кругу
+  function loopBadge() {
+    return el("span", { class: "badge loop", text: "↻ петля",
+      title: "конец переходит в начало — ролик крутится по кругу, и повтор не сразу заметен" });
+  }
+
   function autosize(ta) {
     ta.style.height = "auto";
     ta.style.height = ta.scrollHeight + 2 + "px";
@@ -161,6 +167,7 @@
     const lineEmotions = () => [...card.querySelectorAll("select.emo")].map((s) => s.value);
     let badge = durationBadge(estimate(scene.script.map((l) => l.text)).seconds);
     const words = el("span", { text: `${scene.words} слов` });
+    let syncSeam = null;
     const onEdit = () => {
       card.classList.add("dirty");
       const est = estimate(texts());
@@ -168,10 +175,12 @@
       badge.replaceWith(fresh);
       badge = fresh;
       words.textContent = `${est.words} слов`;
+      if (syncSeam) syncSeam();
     };
 
     const meta = el("div", { class: "meta" },
       el("span", { class: "badge", text: TYPE_LABEL[scene.type] || scene.type }),
+      scene.loop ? loopBadge() : null,
       badge, words,
       el("span", { text: fmtTime(scene.created_at) }));
     if (scene.source && scene.source.url) {
@@ -191,6 +200,22 @@
         return el("div", { class: "msg " + (right ? "right" : "left") },
           el("div", { class: "msg-head" }, el("span", { class: "who", text: who }), emotionSelect(line, onEdit)), ta);
       }));
+      if (scene.loop) {
+        // Стык петли: после последнего сообщения — снова первое, как его увидит зритель на следующем круге
+        const ghostText = el("div", { class: "ghost-bubble" });
+        const ghost = el("div", { class: "msg ghost" }, ghostText);
+        const show = (all) => {
+          const i = Math.max(0, all.findIndex((t) => t.trim()));   // пустые сообщения удаляются
+          ghost.className = "msg ghost " + (scene.script[i].speaker === "B" ? "right" : "left");
+          ghostText.textContent = all[i];
+        };
+        show(scene.script.map((l) => l.text));
+        syncSeam = () => show(texts());
+        body.append(el("div", { class: "seam" },
+          el("div", { class: "seam-label", text: "↻ дальше по кругу — снова первое сообщение" }),
+          ghost,
+          scene.loop_idea ? el("div", { class: "seam-idea", text: "Стык: " + scene.loop_idea }) : null));
+      }
     } else {
       body = el("div", { class: "card-body" }, scene.script.map((line) => {
         const ta = el("textarea", { class: "para", oninput: (e) => { autosize(e.target); onEdit(); } });
@@ -312,6 +337,7 @@
         el("div", { class: "card-head" },
           el("div", { class: "card-title", text: scene.title || "Без названия" }),
           el("div", { class: "meta" }, el("span", { class: "badge", text: TYPE_LABEL[scene.type] || scene.type }),
+            scene.loop ? loopBadge() : null,
             el("span", { text: (scene.script[0] || { text: "" }).text.slice(0, 140) + "…" }))),
         el("div", { class: "card-foot" }, btn));
       return card;
@@ -365,7 +391,9 @@
 
   function videoCard(v) {
     const title = v.title || TYPE_LABEL[v.type] || v.type;
-    const player = v.url ? el("video", { src: v.url, controls: true, preload: "metadata", playsinline: true }) : null;
+    // петлю плеер крутит по кругу — стык виден так же, как на площадке
+    const player = v.url ? el("video", { src: v.url, controls: true, preload: "metadata", playsinline: true,
+                                         loop: v.loop }) : null;
     const del = el("button", { class: "danger", text: "Удалить", onclick: async () => {
       if (!confirm(`Удалить ролик «${title}»? Файл удалится насовсем.`)) return;
       del.disabled = true;
@@ -395,6 +423,7 @@
         el("b", { text: title }),
         el("div", { class: "meta" },
           el("span", { class: "badge", text: TYPE_LABEL[v.type] || v.type }),
+          v.loop ? loopBadge() : null,
           el("span", { text: `${v.duration_s} с` }),
           v.size_mb ? el("span", { text: `${v.size_mb} МБ` }) : null,
           el("span", { text: fmtTime(v.rendered_at) })),
@@ -451,8 +480,9 @@
     try {
       const body = { kind: form.dataset.kind, count: Number(form.count.value) || 1 };
       if (form.topic) body.topic = form.topic.value;
+      if (form.loop && form.loop.checked) body.loop = true;
       const r = await api("/api/generate", { method: "POST", body });
-      toast(`Поставлено: ${r.jobs.length} задач${r.worker_started ? " — обработчик запущен" : ""}. Сценарии появятся на проверке.`);
+      toast(`Поставлено: ${r.jobs.length} задач${body.loop ? " (петли)" : ""}${r.worker_started ? " — обработчик запущен" : ""}. Сценарии появятся на проверке.`);
       refreshSummary();
     } catch (err) { toast(err.message, true); }
     btn.disabled = false;

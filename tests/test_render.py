@@ -103,6 +103,8 @@ def test_background_fits_inside_file(cfg):
         bg = pick_background(cfg, 15000, rng)
         assert 0 <= bg["start_ms"] <= 20000 - 15000
     assert pick_background(cfg, 60000, rng)["start_ms"] == 0     # фон короче ролика — с нуля + цикл
+    for _ in range(50):                                          # петля: запас фона перед стартом
+        assert 800 <= pick_background(cfg, 15000, rng, lead_ms=800)["start_ms"] <= 20000 - 15000
 
 
 def test_story_full_bg_with_subtitles(cfg, media, tmp_path):
@@ -153,6 +155,38 @@ def test_drama_ui_over_bg_is_transparent(cfg, media, tmp_path):
     transparent = sample_pixel(out, cfg["video"]["width"] - 10, 10)
     assert all(c > 240 for c in opaque)
     assert transparent[0] > 180 and transparent[1] < 80 and transparent[2] < 80   # красный фон просвечивает
+
+
+def test_loop_drama_seamless_background(cfg, media, tmp_path):
+    """Петля: ролик без хвоста (пауза как между репликами, целое число кадров), фон в конце плавно
+    переходит в кадры перед своим началом — последний кадр продолжается первым."""
+    from compositor import scene_duration_s
+    ramp = tmp_path / "ramp.mp4"                                  # красный канал растёт: 12 единиц в секунду
+    run_ffmpeg(["-f", "lavfi", "-i", "color=c=black:s=64x64:r=30:d=20,geq=r='12*T':g=0:b=0",
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "0", "-pix_fmt", "yuv420p", str(ramp)])
+    scene = voiced(base_scene(cfg, "imessage_drama", tmp_path), media)
+    scene["script"][0]["speaker"], scene["script"][1]["speaker"] = "A", "B"
+    scene["meta"] = {"loop": True}
+    scene["background"] = {"type": "ramp", "source_path": str(ramp), "start_ms": 6000}
+
+    duration = scene_duration_s(scene, cfg)
+    assert duration * 30 == pytest.approx(round(duration * 30))                          # целое число кадров
+    assert duration == pytest.approx(4.0 + cfg["tts"]["pause_between_lines_ms"] / 1000, abs=1 / 30)
+    graph = build_plan(scene, cfg, "libx264", FAST_X264, media["ui"]).args
+    assert f"xfade=transition=fade:duration=0.800:offset={duration - 0.8:.3f}" in " ".join(graph)
+
+    render_scene(scene, cfg, ui_video=media["ui"])
+    out = scene["output"]["path"]
+    check_video(out, duration)
+    first = sample_pixel(out, 540, 1800, 0)                          # ниже интерфейса — только фон
+    last = sample_pixel(out, 540, 1800, duration - 1.5 / 30)
+    assert abs(first[0] - 12 * 6) <= 6                                # фон с 6-й секунды
+    assert abs(last[0] - first[0]) <= 6                               # без перехода было бы 12 × 4.3 ≈ 52
+
+    scene["background"]["start_ms"] = 300                             # фона перед стартом нет — без перехода
+    assert "xfade" not in " ".join(build_plan(scene, cfg, "libx264", FAST_X264, media["ui"]).args)
+    del scene["meta"]["loop"]                                         # не петля — хвост как обычно
+    assert scene_duration_s(scene, cfg) == pytest.approx(4.0 + cfg["compositor"]["tail_ms"] / 1000)
 
 
 def test_falls_back_to_libx264(cfg, media, tmp_path):

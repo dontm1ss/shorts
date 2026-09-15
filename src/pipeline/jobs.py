@@ -107,12 +107,15 @@ def script_story(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dic
 
 
 def script_drama(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dict:
+    """Переписка. payload: topic — необязательно; loop — петля (конец переходит в начало, ролик по кругу)."""
     from scripting import DeepSeekClient, drama_scene, generate_drama
     client = DeepSeekClient(cfg)
     topic = payload.get("topic")
-    scene = _prefit(drama_scene(generate_drama(client, cfg, topic), cfg, topic), cfg, client)
+    loop = bool(payload.get("loop"))
+    scene = _prefit(drama_scene(generate_drama(client, cfg, topic, loop=loop), cfg, topic), cfg, client)
     path = scene_path(cfg, scene["scene_id"])
-    log.info("Переписка «%s» (%d сообщений) → %s", scene["meta"]["title"], len(scene["script"]), rel_path(path))
+    log.info("%s «%s» (%d сообщений) → %s", "Переписка-петля" if loop else "Переписка", scene["meta"]["title"],
+             len(scene["script"]), rel_path(path))
     return _after_script(scene, path, cfg)
 
 
@@ -178,13 +181,14 @@ def ui_render(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dict:
 
 
 def video_render(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dict:
-    from compositor import pick_background, scene_duration_s
+    from compositor import loop_fade_ms, pick_background, scene_duration_s
     from pipeline.manifest import record as record_manifest
     from renderer import render_scene
     path = _scene_file(payload)
     scene = load_scene(path)
     if "background" not in scene:
-        scene["background"] = pick_background(cfg, round(scene_duration_s(scene, cfg) * 1000))
+        scene["background"] = pick_background(cfg, round(scene_duration_s(scene, cfg) * 1000),
+                                              lead_ms=loop_fade_ms(scene, cfg))
         save_scene(scene, path)
     ui = work_dir(cfg, scene) / "ui.mov" if scene["type"] == "imessage_drama" else None
     if ui is not None and not ui.exists():   # удалена автоочисткой после прошлого рендера

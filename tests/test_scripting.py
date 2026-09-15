@@ -118,6 +118,53 @@ def test_drama_normalized(dev_cfg):
     assert scene["meta"]["genders"] == {"A": "female", "B": "female"}     # «Ж» распознан, чужая роль C убрана
 
 
+LOOP_DRAMA = {**DRAMA, "loop": "  На «О чём ты?» первое сообщение\n отвечает обвинением.  "}
+
+
+def test_loop_drama_prompt_and_meta(dev_cfg):
+    """Петля: блок стыка в промпте, вместо финала — стык, описание стыка сохраняется в сцене."""
+    client = FakeClient(LOOP_DRAMA)
+    drama = generate_drama(client, dev_cfg, loop=True)
+    system = client.calls[0][0]
+    assert "ПЕТЛЯ" in system and '"loop": "как последнее сообщение переходит в первое' in system
+    assert system.index('"loop": "') < system.index('"messages": [')        # стык придумывается до сообщений
+    assert "Стык петли: " in system and "Финал: " not in system              # у петли нет финала
+    assert drama["loop"] is True and drama["loop_idea"] == "На «О чём ты?» первое сообщение отвечает обвинением."
+    scene = drama_scene(drama, dev_cfg)
+    assert scene_errors(scene) == []
+    assert scene["meta"]["loop"] is True and scene["meta"]["loop_idea"] == drama["loop_idea"]
+
+    plain = FakeClient(LOOP_DRAMA)                                          # без галочки — обычная переписка
+    drama = generate_drama(plain, dev_cfg)
+    assert "ПЕТЛЯ" not in plain.calls[0][0] and '"loop"' not in plain.calls[0][0]
+    assert "loop" not in drama and "loop" not in drama_scene(drama, dev_cfg)["meta"]
+
+
+def test_rewrite_keeps_loop(dev_cfg):
+    scene = drama_scene(generate_drama(FakeClient(LOOP_DRAMA), dev_cfg, loop=True), dev_cfg)
+    client = FakeClient(DRAMA)                                              # редактор поле loop не возвращает
+    new = rewrite_scene_length(scene, current_s=75.0, client=client, cfg=dev_cfg)
+    assert "Это петля" in client.calls[0][0]                                # стык не ломать
+    assert new["meta"]["loop"] is True and new["meta"]["loop_idea"] == scene["meta"]["loop_idea"]
+
+    plain = drama_scene(generate_drama(FakeClient(DRAMA), dev_cfg), dev_cfg)
+    client = FakeClient(DRAMA)
+    assert "loop" not in rewrite_scene_length(plain, current_s=75.0, client=client, cfg=dev_cfg)["meta"]
+    assert "петля" not in client.calls[0][0]
+
+
+def test_script_drama_job_loop(dev_cfg, tmp_path, monkeypatch):
+    import scripting
+    from pipeline import jobs
+    from core.scene import load_scene
+    dev_cfg["paths"]["output"] = str(tmp_path / "out")
+    monkeypatch.setattr(scripting, "DeepSeekClient", lambda cfg: FakeClient(LOOP_DRAMA))
+    monkeypatch.setattr(jobs, "_prefit", lambda scene, cfg, client: scene)
+    result = jobs.script_drama({"topic": None, "loop": True}, dev_cfg)
+    scene = load_scene(tmp_path / "out" / "scenes" / (result["scene"].rsplit("/", 1)[-1]))
+    assert result["review"] == "pending" and scene["meta"]["loop"] is True
+
+
 def test_drama_rejects_unknown_speaker(dev_cfg):
     bad = {"messages": [{"speaker": "C", "text": "кто я"}]}
     with pytest.raises(ScriptError, match="отправитель"):

@@ -48,6 +48,7 @@ class GenerateBody(BaseModel):
     kind: str
     count: int = 1
     topic: str | None = None
+    loop: bool = False   # переписка-петля: конец переходит в начало
 
 
 class SettingsBody(BaseModel):
@@ -68,6 +69,8 @@ def scene_card(scene: dict, cfg: dict) -> dict:
         "contacts": meta.get("contacts", {}),
         "genders": meta.get("genders", {}),
         "review": meta.get("review", {}),
+        "loop": bool(meta.get("loop")),
+        "loop_idea": meta.get("loop_idea", ""),
         "script": script,
         "words": sum(word_count(line["text"]) for line in script),
         "est_s": round(estimate_duration_s(script, cfg), 1) if script else 0,
@@ -260,9 +263,12 @@ def create_app(cfg: dict) -> FastAPI:
         try:
             topic = (body.topic or "").strip() or None
             if body.kind == "story":
+                if body.loop:
+                    raise HTTPException(status_code=400, detail="Петля есть только у переписок")
                 ids = [queue.enqueue("script_story", {"topic": topic}) for _ in range(count)]
             elif body.kind == "drama":
-                ids = [queue.enqueue("script_drama", {"topic": topic}) for _ in range(count)]
+                payload = {"topic": topic, "loop": True} if body.loop else {"topic": topic}
+                ids = [queue.enqueue("script_drama", payload) for _ in range(count)]
             else:
                 raise HTTPException(status_code=400, detail="kind: story | drama")
         finally:

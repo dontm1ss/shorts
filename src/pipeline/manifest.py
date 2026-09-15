@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.config import ROOT
+from core.scene import is_loop
 
 
 def _manifest_path(cfg: dict) -> Path:
@@ -68,6 +69,7 @@ def record(cfg: dict, scene: dict, result: dict) -> None:
         "scene_id": scene["scene_id"],
         "type": scene["type"],
         **_label(scene),
+        **({"loop": True} if is_loop(scene) else {}),   # панель крутит такой ролик по кругу
         "duration_s": round(result.get("duration_s", 0.0), 1),
         "output": result.get("output", ""),
         "created_at": scene.get("created_at", ""),

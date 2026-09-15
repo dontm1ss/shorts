@@ -6,6 +6,9 @@
 
 Субтитры подключаются по имени файла относительно рабочей папки ffmpeg (cwd = папка .ass):
 так не нужно экранировать путь Windows с двоеточием и кириллицей внутри filtergraph.
+
+Петля (meta.loop) крутится по кругу: вместо хвоста — пауза как между репликами, длина — целое число
+кадров, фон в конце плавно переходит в кадры перед своим началом.
 """
 from __future__ import annotations
 
@@ -13,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from core.media import media_info
-from core.scene import abs_path
+from core.scene import abs_path, is_loop
 
 
 @dataclass
@@ -35,19 +38,51 @@ def _fit(label_in: str, label_out: str, w: int, h: int, fps: int, mode: str = "c
             f"crop={w}:{h},setsar=1,fps={fps}[{label_out}]")
 
 
-def _bg_input(scene: dict, duration_s: float) -> list[str]:
+def _bg_input(scene: dict, duration_s: float, offset_s: float = 0.0) -> list[str]:
+    """Отрезок фона сцены; offset_s — сдвиг от start_ms (петля: кадры перед стартом)."""
     bg = scene["background"]
     path = abs_path(bg["source_path"])
-    start_s = bg["start_ms"] / 1000
-    loop = ["-stream_loop", "-1"] if media_info(path)["duration_ms"] / 1000 < start_s + duration_s else []
-    return [*loop, "-ss", f"{start_s:.3f}", "-t", f"{duration_s:.3f}", "-i", str(path)]
+    start_s = bg["start_ms"] / 1000 + offset_s
+    repeat = ["-stream_loop", "-1"] if media_info(path)["duration_ms"] / 1000 < start_s + duration_s else []
+    return [*repeat, "-ss", f"{start_s:.3f}", "-t", f"{duration_s:.3f}", "-i", str(path)]
+
+
+def _bg_stream(scene: dict, cfg: dict, inputs: list[str], index: int, duration: float, label: str,
+               w: int, h: int, fps: int) -> list[str]:
+    """Фон сцены (вход index) под размер кадра → [label]. Петля: последние loop_fade_ms фон плавно
+    переходит в кадры перед start_ms (ещё один вход в конце inputs) — первый кадр ролика продолжает
+    последний, и стык на фоне не виден."""
+    fade_s = loop_fade_ms(scene, cfg) / 1000
+    if not fade_s or scene["background"]["start_ms"] / 1000 < fade_s or duration <= fade_s:
+        return [_fit(f"{index}:v", label, w, h, fps)]
+    pre = inputs.count("-i")                        # номер добавляемого входа
+    inputs += _bg_input(scene, fade_s, offset_s=-fade_s)
+    return [_fit(f"{index}:v", f"{label}_main", w, h, fps), _fit(f"{pre}:v", f"{label}_pre", w, h, fps),
+            f"[{label}_main][{label}_pre]xfade=transition=fade:duration={fade_s:.3f}"
+            f":offset={duration - fade_s:.3f}[{label}]"]
+
+
+def tail_ms(scene: dict, cfg: dict) -> int:
+    """Хвост ролика после конца озвучки. У петли вместо хвоста — обычная пауза между репликами:
+    повтор начинается так же, как следующая реплика, и стык не слышен."""
+    return cfg["tts"]["pause_between_lines_ms"] if is_loop(scene) else cfg["compositor"]["tail_ms"]
+
+
+def loop_fade_ms(scene: dict, cfg: dict) -> int:
+    """Сколько в конце петли фон переходит в кадры перед своим началом; столько фона нужно
+    в запасе перед start_ms (pick_background lead_ms). Не петля — 0."""
+    return cfg["compositor"]["loop_crossfade_ms"] if is_loop(scene) else 0
 
 
 def scene_duration_s(scene: dict, cfg: dict) -> float:
     if scene["type"] == "video_clip":
         sv = scene["source_video"]
         return (sv["clip_end_ms"] - sv["clip_start_ms"]) / 1000
-    return (scene["audio"]["duration_ms"] + cfg["compositor"]["tail_ms"]) / 1000
+    ms = scene["audio"]["duration_ms"] + tail_ms(scene, cfg)
+    if is_loop(scene):   # целое число кадров: звук и видео одной длины, стык ровно на границе кадра
+        fps = cfg["video"]["fps"]
+        return round(ms * fps / 1000) / fps
+    return ms / 1000
 
 
 def build_plan(scene: dict, cfg: dict, encoder: str, encoder_args: list[str],
@@ -68,7 +103,7 @@ def build_plan(scene: dict, cfg: dict, encoder: str, encoder_args: list[str],
     if layout == "full_bg":
         inputs += _bg_input(scene, duration)                                   # 0: фон
         inputs += ["-i", str(abs_path(scene["audio"]["path"]))]               # 1: озвучка
-        graph.append(_fit("0:v", "base", W, H, fps))
+        graph += _bg_stream(scene, cfg, inputs, 0, duration, "base", W, H, fps)   # петля: 2 — фон перед стартом
         audio_src = "1:a"
     elif layout == "top_bottom":
         sv = scene["source_video"]
@@ -99,7 +134,7 @@ def build_plan(scene: dict, cfg: dict, encoder: str, encoder_args: list[str],
         inputs += ["-i", str(ui_video)]                                        # 0: интерфейс
         inputs += _bg_input(scene, duration)                                   # 1: фон
         inputs += ["-i", str(abs_path(scene["audio"]["path"]))]               # 2: озвучка
-        graph.append(_fit("1:v", "bgfull", W, H, fps))
+        graph += _bg_stream(scene, cfg, inputs, 1, duration, "bgfull", W, H, fps)  # петля: 3 — фон перед стартом
         # format=yuva420p явно: альфа записи iMessage (recorder.py, qtrle/argb) должна дойти
         # до overlay, иначе прозрачный фон интерфейса снова стал бы непрозрачным
         graph.append(f"[0:v]scale={W}:{ui_h},format=yuva420p,setsar=1,fps={fps}[ui]")
