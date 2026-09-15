@@ -54,6 +54,27 @@ powershell -ExecutionPolicy Bypass -File scripts\panel_online.ps1 # то же + 
 Доступ из интернета — HTTPS на сервере + SSH-туннель к ПК, пароль `PANEL_PASSWORD` в `.env`:
 [docs/panel-deploy.md](docs/panel-deploy.md).
 
+### Автозапуск и уведомления
+
+Ферма не должна вставать молча. `scripts\autostart.ps1` добавляет в автозагрузку Windows запуск
+`panel_online.ps1` (без прав администратора): он держит панель и туннель, перезапуская упавшее,
+а панель раз в минуту проверяет обработчик очереди — есть задачи, а он не запущен, — запускает
+(`panel.watchdog_s`).
+
+```bash
+powershell -ExecutionPolicy Bypass -File scripts\autostart.ps1 -Start    # включить и запустить сейчас
+powershell -ExecutionPolicy Bypass -File scripts\autostart.ps1 -Remove   # убрать из автозагрузки
+```
+
+Уведомления в Telegram — упавшие задачи (пачкой), готовые ролики и новые сценарии на проверке
+(когда очередь опустела, иначе раз в час), перезапуск обработчика. Токен бота от @BotFather —
+строкой `TELEGRAM_BOT_TOKEN=…` в `.env`, затем написать боту /start и найти свой чат:
+
+```bash
+venv\Scripts\python -m notify setup   # записывает TELEGRAM_CHAT_ID в .env и шлёт проверочное сообщение
+venv\Scripts\python -m notify test    # ещё одно проверочное сообщение
+```
+
 ## Конвейер
 
 Всё идёт через очередь задач на SQLite (`output/queue.sqlite`): тяжёлые этапы строго по одному,
@@ -120,6 +141,8 @@ src/
   compositor/        пул фоновых видео, раскладки кадра (сборка команды ffmpeg)
   renderer/          финальный рендер (энкодер профиля, запасной libx264)
   pipeline/          очередь SQLite, задачи, воркер, CLI
+  notify/            уведомления в Telegram, сводки обработчика
+  panel/             веб-панель отбора (FastAPI) и сторож обработчика
 data/                исходные видео (не в git), посты форумов (не в git)
 tests/               pytest + tests/fixtures/ — моковые сцены для проверки модулей без полного прогона
 output/              всё сгенерированное (не в git)

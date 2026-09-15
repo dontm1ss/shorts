@@ -219,6 +219,17 @@ auto_approve = false
 host = "127.0.0.1"   # только локально; наружу — через туннель на сервер (docs/panel-deploy.md)
 port = 8765
 user = "admin"       # пароль — PANEL_PASSWORD в .env; без него панель пускает всех (только localhost!)
+# Сторож: раз в столько секунд панель проверяет обработчик очереди — есть задачи, а он не запущен
+# (упал, ПК перезагрузился) — запускает и пишет в Telegram. 0 — выключить.
+watchdog_s = 60
+
+# Уведомления в Telegram: упавшие задачи, готовые ролики, сценарии на проверке, перезапуск обработчика.
+# Токен бота и чат — в .env (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID): venv\Scripts\python -m notify setup
+[notify]
+enabled = true
+panel_url = "https://v3242400.hosted-by-vdsina.ru"   # ссылка на панель в сообщениях
+failures_batch_s = 30      # упавшие задачи — одним сообщением через столько секунд после первой
+ready_digest_min = 60      # готовые ролики, пока очередь не опустела, — не чаще раза в столько минут
 
 [compositor]
 clip_fit = "cover"        # cover — заполнить область с обрезкой краёв; contain — вписать на размытом фоне

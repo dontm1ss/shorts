@@ -23,6 +23,7 @@ from pathlib import Path
 
 from core.config import ROOT
 from core.scene import output_dir
+from notify import Digest
 from pipeline.queue import Job, JobQueue, WorkerLock
 
 log = logging.getLogger(__name__)
@@ -101,7 +102,7 @@ def _claim(queue: JobQueue, lane: str, cfg: dict) -> list[Job]:
     return jobs
 
 
-def _finish(queue: JobQueue, jobs: list[Job], future: Future, elapsed: float) -> None:
+def _finish(queue: JobQueue, jobs: list[Job], future: Future, elapsed: float, digest: Digest) -> None:
     try:
         outcomes = future.result()
     except Exception as e:   # процесс задачи не удалось даже запустить
@@ -113,10 +114,13 @@ def _finish(queue: JobQueue, jobs: list[Job], future: Future, elapsed: float) ->
             for chain in result.get("next", []):
                 queue.enqueue_chain(chain, depends_on=j.id)
             log.info("✓ #%d %s", j.id, j.kind)
+            digest.job_done(j, result)
         else:
             status = queue.fail(j.id, error)
             log.error("✗ #%d %s — %s\n%s", j.id, j.kind,
                       "будет повтор" if status == "pending" else "задача провалена", error)
+            if status == "failed":
+                digest.job_failed(j, error)
     log.info("  %s — %.1f с", "пачка" if len(jobs) > 1 else f"#{jobs[0].id}", elapsed)
 
 
@@ -128,6 +132,7 @@ def run_worker(cfg: dict, stop_when_empty: bool = True, poll_s: float = 3.0) -> 
     lanes = ("heavy", "light") if cfg["queue"].get("light_lane", True) else ("heavy",)
     running: dict[str, tuple[Future, list[Job], float]] = {}
     pool = ThreadPoolExecutor(max_workers=len(lanes), thread_name_prefix="lane")
+    digest = Digest(cfg)   # сводки в Telegram: упавшие задачи, готовые ролики, сценарии на проверке
     try:
         if stale := queue.reset_stale():
             log.info("Возвращено в очередь после сбоя: %d", stale)
@@ -138,6 +143,7 @@ def run_worker(cfg: dict, stop_when_empty: bool = True, poll_s: float = 3.0) -> 
                 extra = f" (+{len(jobs) - 1} в пачке — модель грузится один раз)" if len(jobs) > 1 else ""
                 log.info("▶ #%d %s %s%s", jobs[0].id, jobs[0].kind, _short(jobs[0].payload), extra)
                 running[lane] = (pool.submit(_run_subprocess, jobs, cfg), jobs, time.perf_counter())
+            digest.tick(idle=not running)
             if not running:
                 if stop_when_empty:
                     break
@@ -148,12 +154,13 @@ def run_worker(cfg: dict, stop_when_empty: bool = True, poll_s: float = 3.0) -> 
             for lane, (future, jobs, t0) in list(running.items()):
                 if future.done():
                     del running[lane]
-                    _finish(queue, jobs, future, time.perf_counter() - t0)
+                    _finish(queue, jobs, future, time.perf_counter() - t0, digest)
         return queue.counts()
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
         queue.close()
         lock.release()
+        digest.flush()
 
 
 def run_jobs(job_ids: list[int], cfg: dict) -> int:

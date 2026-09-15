@@ -210,6 +210,7 @@ def probe_encoder(encoder: str, args: list[str] = ()) -> bool:
 def _summary(cfg: dict) -> str:
     p, hw, r, s, v = cfg["profile"], cfg["hardware"], cfg["render"], cfg["subtitles"], cfg["video"]
     ok = lambda flag: "работает" if flag else "НЕ работает"
+    telegram = all(os.environ.get(k) or read_env_file().get(k) for k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"))
     lines = [
         f"Профиль:   {p['name']} ({'задан вручную' if p['selected_by'] == 'override' else 'автовыбор'})",
         f"           {p['description']}",
@@ -222,6 +223,7 @@ def _summary(cfg: dict) -> str:
         f"Рендер:    {r['encoder']} — {ok(probe_encoder(r['encoder'], r['encoder_args']))}; "
         f"запасной {r['fallback_encoder']} — {ok(probe_encoder(r['fallback_encoder']))}",
         f"DeepSeek:  ключ {'задан' if cfg['deepseek']['api_key'] else 'НЕ задан'}",
+        f"Telegram:  уведомления {'настроены' if telegram else 'не настроены (python -m notify setup)'}",
     ]
     if not p["matches_hardware"]:
         lines.append("ВНИМАНИЕ:  профиль не соответствует железу этой машины")

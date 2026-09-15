@@ -291,6 +291,28 @@ def test_loop_card_and_video(cfg):
     assert videos[scene["scene_id"]]["loop"] is True and "loop" not in videos[plain["scene_id"]]
 
 
+def test_watchdog_restarts_stopped_worker(cfg, monkeypatch):
+    """Обработчик упал или ПК перезагрузился, а задачи остались — панель запускает его сама и пишет в Telegram."""
+    import time
+    started, sent = [], []
+    monkeypatch.setattr(panel.app, "start_worker", lambda cfg: started.append(1) or True)
+    monkeypatch.setattr(panel.app, "notify", lambda cfg, text: sent.append(text))
+    assert panel.app.ensure_worker(cfg) == 0 and started == []                # очередь пуста — не нужен
+    queue = open_queue(cfg)
+    queue.enqueue("tts_synthesis", {})
+    queue.enqueue("video_render", {})
+    queue.close()
+    monkeypatch.setattr(panel.app, "worker_running", lambda cfg: True)
+    assert panel.app.ensure_worker(cfg) == 0 and started == []                # уже работает
+    monkeypatch.setattr(panel.app, "worker_running", lambda cfg: False)
+    with TestClient(panel.app.create_app(cfg)):                                # сторож стартует вместе с панелью
+        for _ in range(100):
+            if sent:
+                break
+            time.sleep(0.05)
+    assert started == [1] and sent == ["⚠️ Обработчик очереди не работал — запущен снова. Задач в очереди: 2"]
+
+
 def test_api_jobs_have_timestamps(cfg):
     client = TestClient(panel.app.create_app(cfg))
     queue = open_queue(cfg)

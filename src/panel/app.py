@@ -7,13 +7,16 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
+import logging
 import os
 import re
 import secrets
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -25,12 +28,15 @@ from pydantic import BaseModel
 from core.config import ROOT
 from core.emotions import DEFAULT as DEFAULT_EMOTION, EMOTIONS
 from core.scene import output_dir, scene_path
+from notify import notify
 from pipeline import manifest
 from pipeline.queue import WorkerLock
 from pipeline.review import (ReviewError, approve, auto_approve, delete_scenes, list_scenes, reject, restore,
                              set_auto_approve, set_texts)
 from pipeline.worker import open_queue
 from scripting import estimate_duration_s, word_count
+
+log = logging.getLogger(__name__)
 
 WEB = Path(__file__).resolve().parent / "web"
 STATIC = {"app.js": "text/javascript", "style.css": "text/css"}
@@ -157,8 +163,43 @@ def start_worker(cfg: dict) -> bool:
     return True
 
 
+def ensure_worker(cfg: dict) -> int:
+    """Есть задачи, а обработчик не запущен (упал, ПК перезагрузился) — запустить.
+    Возвращает, сколько задач его ждало, или 0, если запускать не пришлось."""
+    queue = open_queue(cfg)
+    try:
+        counts = queue.counts()
+    finally:
+        queue.close()
+    waiting = counts.get("pending", 0) + counts.get("running", 0)   # running без воркера — после сбоя
+    if not waiting or worker_running(cfg) or not start_worker(cfg):
+        return 0
+    return waiting
+
+
+def _watchdog(cfg: dict, stop: threading.Event) -> None:
+    """Сторож: обработчик не должен вставать молча — проверка сразу и раз в panel.watchdog_s."""
+    while True:
+        try:
+            if waiting := ensure_worker(cfg):
+                log.warning("Обработчик не работал при %d задачах в очереди — запущен", waiting)
+                notify(cfg, f"⚠️ Обработчик очереди не работал — запущен снова. Задач в очереди: {waiting}")
+        except Exception:
+            log.exception("Сторож обработчика")
+        if stop.wait(cfg["panel"]["watchdog_s"]):
+            return
+
+
 def create_app(cfg: dict) -> FastAPI:
-    app = FastAPI(title="shorts", docs_url=None, redoc_url=None, openapi_url=None)
+    @contextlib.asynccontextmanager
+    async def lifespan(app: FastAPI):
+        stop = threading.Event()
+        if cfg["panel"]["watchdog_s"]:
+            threading.Thread(target=_watchdog, args=(cfg, stop), name="watchdog", daemon=True).start()
+        yield
+        stop.set()
+
+    app = FastAPI(title="shorts", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     user, password = cfg["panel"]["user"], cfg["panel"].get("password")
 
     def authorized(header: str) -> bool:
