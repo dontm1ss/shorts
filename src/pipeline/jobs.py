@@ -44,8 +44,14 @@ class JobContext:
 
 def _after_script(scene: dict, path: Path, cfg: dict) -> dict:
     """Сценарий готов: на отбор в веб-панель (review.enabled) или сразу в работу
-    (отбор выключен или включено автоодобрение)."""
-    from pipeline.review import auto_approve, mark_auto_approved, mark_pending, processing_chain
+    (отбор выключен или включено автоодобрение). Оценка редактора ниже порога — в «Отклонённые»."""
+    from pipeline.review import auto_approve, mark_auto_approved, mark_pending, mark_rejected, processing_chain
+    score = scene.get("meta", {}).get("score")
+    if score and score["total"] < cfg["scoring"]["min_score"]:
+        save_scene(mark_rejected(scene, f"оценка редактора {score['total']}/10: {score['verdict']}"), path)
+        log.info("Оценка %d/10 ниже %d — в «Отклонённые» (можно вернуть в панели)",
+                 score["total"], cfg["scoring"]["min_score"])
+        return {"scene": rel_path(path), "review": "rejected", "score": score["total"]}
     if cfg["review"]["enabled"]:
         if not auto_approve(cfg):
             save_scene(mark_pending(scene), path)
@@ -71,6 +77,36 @@ def script_batch(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dic
     log.info("Постов для историй: %d из %d запрошенных", len(posts), count)
     return {"posts": len(posts),
             "next": [[{"kind": "script_story", "payload": {"post": rel_path(p)}}] for p in posts]}
+
+def _score(scene: dict, cfg: dict, client) -> dict:
+    """Оценка DeepSeek-редактором (scoring): ниже порога — переписать по его замечаниям (остаётся лучший
+    вариант), оценка — в meta.score. Сбой оценки не мешает сценарию попасть на проверку."""
+    from scripting import DeepSeekError, ScriptError, revise_scene, score_scene
+    sc = cfg["scoring"]
+    if not sc["enabled"]:
+        return scene
+    try:
+        score = score_scene(scene, client, cfg)
+    except (DeepSeekError, ScriptError) as e:
+        log.warning("Оценить сценарий не удалось — на проверку без оценки: %s", e)
+        return scene
+    log.info("Оценка редактора: %d/10 — %s", score["total"], score["verdict"])
+    for _ in range(sc["rewrite_attempts"]):
+        if score["total"] >= sc["min_score"]:
+            break
+        log.info("Ниже %d — переписываю по замечаниям: %s", sc["min_score"], score["fix"])
+        try:
+            revised = _prefit(revise_scene(scene, score["fix"], client, cfg), cfg, client)
+            revised_score = score_scene(revised, client, cfg)
+        except (DeepSeekError, ScriptError) as e:
+            log.warning("Переписать по замечаниям не удалось: %s", e)
+            break
+        log.info("После переписывания: %d/10 — %s", revised_score["total"], revised_score["verdict"])
+        if revised_score["total"] >= score["total"]:
+            scene, score = revised, revised_score
+    scene.setdefault("meta", {})["score"] = score
+    return scene
+
 
 def _prefit(scene: dict, cfg: dict, client) -> dict:
     """Подгонка длины по оценке темпа — до дорогого синтеза."""
@@ -100,7 +136,7 @@ def script_story(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dic
     else:
         topic = (payload.get("topic") or "").strip() or None
         scene = story_scene(invent_story(client, cfg, topic), cfg, topic=topic)
-    scene = _prefit(scene, cfg, client)
+    scene = _score(_prefit(scene, cfg, client), cfg, client)
     path = scene_path(cfg, scene["scene_id"])
     log.info("История «%s» → %s", scene["meta"]["title"], rel_path(path))
     return _after_script(scene, path, cfg)
@@ -113,6 +149,7 @@ def script_drama(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dic
     topic = payload.get("topic")
     loop = bool(payload.get("loop"))
     scene = _prefit(drama_scene(generate_drama(client, cfg, topic, loop=loop), cfg, topic), cfg, client)
+    scene = _score(scene, cfg, client)
     path = scene_path(cfg, scene["scene_id"])
     log.info("%s «%s» (%d сообщений) → %s", "Переписка-петля" if loop else "Переписка", scene["meta"]["title"],
              len(scene["script"]), rel_path(path))

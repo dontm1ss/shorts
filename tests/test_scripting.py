@@ -158,11 +158,104 @@ def test_script_drama_job_loop(dev_cfg, tmp_path, monkeypatch):
     from pipeline import jobs
     from core.scene import load_scene
     dev_cfg["paths"]["output"] = str(tmp_path / "out")
-    monkeypatch.setattr(scripting, "DeepSeekClient", lambda cfg: FakeClient(LOOP_DRAMA))
+    monkeypatch.setattr(scripting, "DeepSeekClient", lambda cfg: FakeClient(LOOP_DRAMA, {**SCORE, "total": 7}))
     monkeypatch.setattr(jobs, "_prefit", lambda scene, cfg, client: scene)
     result = jobs.script_drama({"topic": None, "loop": True}, dev_cfg)
     scene = load_scene(tmp_path / "out" / "scenes" / (result["scene"].rsplit("/", 1)[-1]))
-    assert result["review"] == "pending" and scene["meta"]["loop"] is True
+    assert result["review"] == "pending" and scene["meta"]["loop"] is True and scene["meta"]["score"]["total"] == 7
+
+
+SCORE = {"hook": "8", "twists": 6.4, "ending": 12, "language": 0, "verdict": "  Крючок сильный,\n концовка вялая. ",
+         "fix": "Последнюю реплику — жёстче."}
+
+
+def test_score_scene_prompt_and_normalization(dev_cfg):
+    from scripting import score_scene
+    scene = drama_scene(generate_drama(FakeClient(DRAMA), dev_cfg), dev_cfg)
+    client = FakeClient(SCORE)
+    score = score_scene(scene, client, dev_cfg)
+    assert score == {"hook": 8, "twists": 6, "ending": 10, "language": 1, "total": 6,   # баллы 1–10, общая — средняя
+                     "verdict": "Крючок сильный, концовка вялая.", "fix": "Последнюю реплику — жёстче."}
+    system, user = client.calls[0]
+    assert "Не завышай" in system and "концовка: сильная ли последняя реплика" in system
+    assert "Серые пузыри — Лена, синие — Я" in user and "Лена: Ты правда думала, что я не узнаю?" in user
+
+    loop = drama_scene(generate_drama(FakeClient(LOOP_DRAMA), dev_cfg, loop=True), dev_cfg)
+    client = FakeClient({**SCORE, "total": 7})
+    assert score_scene(loop, client, dev_cfg)["total"] == 7
+    assert "стык петли" in client.calls[0][0] and "(Петля:" in client.calls[0][1]      # у петли — оценка стыка
+
+    story = story_scene(STORY, dev_cfg)
+    client = FakeClient(SCORE)
+    score_scene(story, client, dev_cfg)
+    assert "историю для озвучки" in client.calls[0][0] and client.calls[0][1].startswith("История «Табличка»")
+    with pytest.raises(ScriptError, match="без баллов"):
+        score_scene(story, FakeClient({"total": 5}), dev_cfg)
+
+
+def test_revise_scene_keeps_identity(dev_cfg):
+    from scripting import revise_scene
+    scene = drama_scene(generate_drama(FakeClient(LOOP_DRAMA), dev_cfg, loop=True), dev_cfg)
+    scene["meta"].update(review={"status": "pending", "created_at": "2026-09-15T10:00:00+00:00"},
+                         score={"total": 4}, style={"font": "Impact"})
+    revised = {**DRAMA, "title": "Скрин 2", "genders": {"A": "male", "B": "male"},
+               "messages": [{"speaker": "A", "emotion": "anger", "text": "Кто слил скрин?"},
+                            {"speaker": "B", "text": "Не я."}]}
+    client = FakeClient(revised)
+    new = revise_scene(scene, "концовку жёстче", client, dev_cfg)
+    system, user = client.calls[0]
+    assert "по замечаниям:\nконцовку жёстче" in system and "не больше 133" in system and "Это петля" in system
+    assert '"Ты правда думала, что я не узнаю?"' in user                          # редактор видит текущий текст
+    assert new["scene_id"] == scene["scene_id"] and new["meta"]["title"] == "Скрин 2"
+    assert [l["text"] for l in new["script"]] == ["Кто слил скрин?", "Не я."]
+    assert new["meta"]["review"]["status"] == "pending" and new["meta"]["style"] == {"font": "Impact"}
+    assert new["meta"]["loop"] is True and "score" not in new["meta"]              # оценка была у прежнего текста
+    assert new["meta"]["genders"] == {"A": "female", "B": "female"}               # голоса те же
+
+
+@pytest.mark.parametrize("scores, status", [
+    ([4, 7], "pending"),        # слабый → переписан по замечаниям → прошёл
+    ([4, 3], "rejected"),       # переписанный хуже — остаётся исходный, и он ниже порога
+    ([8], "pending"),           # сразу хорош — без переписывания
+])
+def test_script_job_scored_and_revised(dev_cfg, tmp_path, monkeypatch, scores, status):
+    import scripting
+    from pipeline import jobs
+    from core.scene import load_scene
+    dev_cfg["paths"]["output"] = str(tmp_path / "out")
+    revised = {**DRAMA, "messages": [{"speaker": "A", "text": "Переписано."}]}
+    answers = [DRAMA, {**SCORE, "total": scores[0]}] + ([revised, {**SCORE, "total": scores[1]}] if len(scores) > 1 else [])
+    client = FakeClient(*answers)
+    monkeypatch.setattr(scripting, "DeepSeekClient", lambda cfg: client)
+    monkeypatch.setattr(jobs, "_prefit", lambda scene, cfg, client: scene)
+    result = jobs.script_drama({"topic": None}, dev_cfg)
+    scene = load_scene(tmp_path / "out" / "scenes" / result["scene"].rsplit("/", 1)[-1])
+    assert result["review"] == status == scene["meta"]["review"]["status"] and client.responses == []
+    assert scene["meta"]["score"]["total"] == max(scores)
+    if len(scores) > 1:
+        assert "Последнюю реплику — жёстче." in client.calls[2][0]                 # переписан по замечаниям
+        assert (scene["script"][0]["text"] == "Переписано.") is (scores[1] >= scores[0])
+    if status == "rejected":
+        assert scene["meta"]["review"]["reason"].startswith("оценка редактора 4/10: Крючок сильный")
+
+
+def test_scoring_failure_does_not_block_script(dev_cfg, tmp_path, monkeypatch):
+    import scripting
+    from pipeline import jobs
+
+    class Flaky(FakeClient):
+        def chat_json(self, system, user, temperature=None):
+            if "строгий редактор" in system:
+                raise DeepSeekError("нет ответа за 60 с")
+            return super().chat_json(system, user, temperature)
+
+    dev_cfg["paths"]["output"] = str(tmp_path / "out")
+    monkeypatch.setattr(scripting, "DeepSeekClient", lambda cfg: Flaky(DRAMA))
+    monkeypatch.setattr(jobs, "_prefit", lambda scene, cfg, client: scene)
+    assert jobs.script_drama({}, dev_cfg)["review"] == "pending"                  # на проверку без оценки
+    dev_cfg["scoring"]["enabled"] = False
+    monkeypatch.setattr(scripting, "DeepSeekClient", lambda cfg: FakeClient(DRAMA))
+    assert jobs.script_drama({}, dev_cfg)["review"] == "pending"
 
 
 def test_drama_rejects_unknown_speaker(dev_cfg):

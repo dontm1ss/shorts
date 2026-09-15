@@ -7,9 +7,12 @@
   const STATUS_LABEL = { pending: "ждёт", running: "идёт", done: "готово", failed: "ошибка", cancelled: "отменена" };
   const WORD = /[\p{L}]+(?:-[\p{L}]+)*|\d+/gu;
 
+  const SCORE_LABEL = { hook: "крючок", twists: "повороты", ending: "концовка", language: "язык" };
+
   let tab = "pending";
   let timing = null;
   let emotions = [];   // [{id, label}] — интонации озвучки (core/emotions.py)
+  let scoring = null;  // {enabled, min_score} — оценка DeepSeek-редактора
   let autoApprove = false;
   let lastSummary = "";
 
@@ -109,6 +112,18 @@
       title: "конец переходит в начало — ролик крутится по кругу, и повтор не сразу заметен" });
   }
 
+  // Оценка DeepSeek-редактора: общая — значком, по пунктам и вердикт — строкой под заголовком
+  function scoreBadge(score) {
+    const ok = !scoring || score.total >= scoring.min_score;
+    return el("span", { class: "badge " + (ok ? "ok" : "warn"), text: `★ ${score.total}/10`,
+      title: "оценка DeepSeek-редактора: крючок, повороты, концовка, язык" });
+  }
+
+  function scoreNote(score, loop) {
+    const parts = Object.entries(SCORE_LABEL).map(([key, label]) => `${key === "ending" && loop ? "стык" : label} ${score[key]}`);
+    return el("div", { class: "score-note", text: "★ " + parts.join(" · ") + (score.verdict ? " — " + score.verdict : "") });
+  }
+
   function autosize(ta) {
     ta.style.height = "auto";
     ta.style.height = ta.scrollHeight + 2 + "px";
@@ -121,6 +136,7 @@
       const s = await api("/api/summary");
       timing = s.timing;
       emotions = s.emotions || [];
+      scoring = s.scoring || null;
       $("#n-pending").textContent = s.review.pending || "";
       $("#n-rejected").textContent = s.review.rejected || "";
       const active = (s.queue.pending || 0) + (s.queue.running || 0);
@@ -163,8 +179,9 @@
   }
 
   function sceneCard(scene) {
-    const texts = () => [...card.querySelectorAll("textarea")].map((t) => t.value);
-    const lineEmotions = () => [...card.querySelectorAll("select.emo")].map((s) => s.value);
+    // только реплики сценария — не поле правки для DeepSeek
+    const texts = () => [...card.querySelectorAll(".card-body textarea")].map((t) => t.value);
+    const lineEmotions = () => [...card.querySelectorAll(".card-body select.emo")].map((s) => s.value);
     let badge = durationBadge(estimate(scene.script.map((l) => l.text)).seconds);
     const words = el("span", { text: `${scene.words} слов` });
     let syncSeam = null;
@@ -181,6 +198,7 @@
     const meta = el("div", { class: "meta" },
       el("span", { class: "badge", text: TYPE_LABEL[scene.type] || scene.type }),
       scene.loop ? loopBadge() : null,
+      scene.score ? scoreBadge(scene.score) : null,
       badge, words,
       el("span", { text: fmtTime(scene.created_at) }));
     if (scene.source && scene.source.url) {
@@ -255,14 +273,65 @@
       } catch (e) { toast(e.message, true); approveBtn.disabled = rejectBtn.disabled = false; }
     } });
 
+    // Переписать с правкой: DeepSeek переделывает сценарий по словам владельца, сохраняя сюжет.
+    // Ответ идёт фоном (до минут) — карточка ждёт и сама заменяется новой версией
+    const note = el("textarea", { class: "note", rows: 2,
+      placeholder: "Что изменить? Например: концовку жёстче, меньше мата в начале, добавь ещё поворот" });
+    const sendRevise = el("button", { text: "Переписать", onclick: async () => {
+      if (!note.value.trim()) { note.focus(); return; }
+      sendRevise.disabled = true;
+      try {
+        await api(`/api/scenes/${scene.scene_id}/revise`,
+          { method: "POST", body: { note: note.value, texts: texts(), emotions: lineEmotions() } });
+        toast("DeepSeek переписывает — карточка обновится сама");
+        setRevising();
+      } catch (e) { toast(e.message, true); sendRevise.disabled = false; }
+    } });
+    const reviseBox = el("div", { class: "revise", hidden: true }, note,
+      el("div", { class: "revise-actions" },
+        el("button", { class: "ghost", text: "Отмена", onclick: () => { reviseBox.hidden = true; } }), sendRevise));
+    const reviseBtn = el("button", { class: "ghost", text: "✎ Переписать", onclick: () => {
+      reviseBox.hidden = !reviseBox.hidden;
+      if (!reviseBox.hidden) note.focus();
+    } });
+    const hint = el("span", { class: "hint", text: "правки и интонации сохраняются при одобрении; пустой абзац — удаляется" });
+
+    const waitRevision = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      if (!card.isConnected) return;               // вкладку перерисовали — у новой карточки свой опрос
+      let fresh;
+      try {
+        fresh = await api(`/api/scenes/${scene.scene_id}`);
+      } catch (e) {
+        if (e.message.startsWith("Нет такого")) card.remove(); else waitRevision();
+        return;
+      }
+      if (fresh.revising) { waitRevision(); return; }
+      card.replaceWith(sceneCard(fresh));
+      const error = fresh.review && fresh.review.revise_error;
+      toast(error ? "Переписать не удалось: " + error
+        : "Переписано" + (fresh.score ? ` — оценка ${fresh.score.total}/10` : ""), !!error);
+    };
+    const setRevising = () => {
+      card.classList.add("revising");
+      card.classList.remove("dirty");
+      card.querySelectorAll("button, textarea, select").forEach((x) => { x.disabled = true; });
+      reviseBox.hidden = true;
+      hint.textContent = "⏳ DeepSeek переписывает по правке…";
+      waitRevision();
+    };
+
+    const reviseError = scene.review && scene.review.revise_error;
     const card = el("article", { class: "card" },
-      el("div", { class: "card-head" }, el("div", { class: "card-title", text: scene.title || "Без названия" }), meta),
+      el("div", { class: "card-head" }, el("div", { class: "card-title", text: scene.title || "Без названия" }), meta,
+        scene.score ? scoreNote(scene.score, scene.loop) : null,
+        reviseError ? el("div", { class: "error-note", text: "Переписать по правке не удалось: " + reviseError }) : null),
       body,
-      el("div", { class: "card-foot" },
-        el("span", { class: "hint", text: "правки и интонации сохраняются при одобрении; пустой абзац — удаляется" }),
-        rejectBtn, approveBtn));
+      reviseBox,
+      el("div", { class: "card-foot" }, hint, reviseBtn, rejectBtn, approveBtn));
     card.dataset.scene = scene.scene_id;
     card.approve = doApprove;
+    if (scene.revising) setRevising();
     return card;
   }
 
@@ -279,7 +348,8 @@
     const count = (n) => `${n} ${plural(n, "сценарий", "сценария", "сценариев")}`;
 
     const approveAll = el("button", { text: "Одобрить все", onclick: async () => {
-      const list = cards.filter((c) => c.isConnected);   // только те, что на странице
+      // только те, что на странице, и не те, что DeepSeek сейчас переписывает
+      const list = cards.filter((c) => c.isConnected && !c.classList.contains("revising"));
       if (!list.length || !confirm(`Одобрить ${count(list.length)}? Они уйдут в озвучку и рендер.`)) return;
       approveAll.disabled = deleteAll.disabled = true;
       let done = 0;
@@ -338,7 +408,10 @@
           el("div", { class: "card-title", text: scene.title || "Без названия" }),
           el("div", { class: "meta" }, el("span", { class: "badge", text: TYPE_LABEL[scene.type] || scene.type }),
             scene.loop ? loopBadge() : null,
-            el("span", { text: (scene.script[0] || { text: "" }).text.slice(0, 140) + "…" }))),
+            scene.score ? scoreBadge(scene.score) : null,
+            el("span", { text: (scene.script[0] || { text: "" }).text.slice(0, 140) + "…" })),
+          scene.review && scene.review.reason
+            ? el("div", { class: "score-note", text: "Отклонён автоматически — " + scene.review.reason }) : null),
         el("div", { class: "card-foot" }, btn));
       return card;
     }) : [el("div", { class: "empty", text: "Отклонённых нет." })]));

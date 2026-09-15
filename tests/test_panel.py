@@ -264,6 +264,82 @@ def test_api_generate_clamps_count(cfg):
     assert client.post("/api/generate", json={"kind": "x"}, headers={"X-Panel": "1"}).status_code == 400
 
 
+class SlowDeepSeek:
+    """Подставной DeepSeek для переписывания по правке: отвечает, только когда тест разрешит."""
+
+    def __init__(self, *answers, error=None):
+        import threading
+        self.answers, self.error, self.go, self.calls = list(answers), error, threading.Event(), []
+
+    def __call__(self, cfg):
+        return self
+
+    def chat_json(self, system, user, temperature=None):
+        self.calls.append(system)
+        assert self.go.wait(5)
+        if self.error:
+            raise self.error
+        return self.answers.pop(0)
+
+
+def wait_revised(client, scene_id):
+    import time
+    for _ in range(100):
+        card = client.get(f"/api/scenes/{scene_id}").json()
+        if not card["revising"]:
+            return card
+        time.sleep(0.05)
+    raise AssertionError("переписывание не закончилось")
+
+
+def test_revise_with_note_in_background(cfg, monkeypatch):
+    import scripting
+    client = TestClient(panel.app.create_app(cfg))
+    x = {"X-Panel": "1"}
+    scene = make_scene(cfg, kind="imessage_drama")
+    sid = scene["scene_id"]
+    revised = {"title": "Скрин", "contacts": {"A": "Лена", "B": "Я"},
+               "messages": [{"speaker": "A", "emotion": "anger", "text": "Кто слил скрин?"},
+                            {"speaker": "B", "text": "Твоя мама."}]}
+    fake = SlowDeepSeek(revised, {"hook": 8, "twists": 7, "ending": 9, "language": 8, "total": 8,
+                                  "verdict": "Жёстче.", "fix": ""})
+    monkeypatch.setattr(scripting, "DeepSeekClient", fake)
+
+    url = f"/api/scenes/{sid}/revise"
+    assert client.post(url, json={"note": "  "}, headers=x).status_code == 400           # что изменить — обязательно
+    body = {"note": "концовку жёстче", "texts": ["Ты думала, я не узнаю?", "О чём ты?"], "emotions": ["sarcasm", "shock"]}
+    assert client.post(url, json=body).status_code == 403                                # без X-Panel
+    r = client.post(url, json=body, headers=x)
+    assert r.status_code == 202
+    card = client.get(f"/api/scenes/{sid}").json()
+    assert card["revising"] is True and card["script"][0]["text"] == "Ты думала, я не узнаю?"   # правки — до переписывания
+    assert client.post(f"/api/scenes/{sid}/approve", headers=x).status_code == 400        # пока переписывается — нельзя
+    assert client.post(url, json=body, headers=x).status_code == 400                     # и второй раз тоже
+
+    fake.go.set()
+    card = wait_revised(client, sid)
+    assert [l["text"] for l in card["script"]] == ["Кто слил скрин?", "Твоя мама."]
+    assert card["review"]["status"] == "pending" and card["review"]["revised_at"] and card["score"]["total"] == 8
+    assert "по замечаниям:\nконцовку жёстче" in fake.calls[0] and "строгий редактор" in fake.calls[1]
+    assert client.post(f"/api/scenes/{sid}/approve", headers=x).status_code == 200       # дальше — как обычно
+    assert client.get("/api/scenes/нет-такого").status_code == 404
+
+
+def test_revise_error_keeps_script(cfg, monkeypatch):
+    import scripting
+    from scripting import DeepSeekError
+    client = TestClient(panel.app.create_app(cfg))
+    scene = make_scene(cfg)
+    fake = SlowDeepSeek(error=DeepSeekError("Нет связи с DeepSeek 300 с"))
+    fake.go.set()
+    monkeypatch.setattr(scripting, "DeepSeekClient", fake)
+    r = client.post(f"/api/scenes/{scene['scene_id']}/revise", json={"note": "короче"}, headers={"X-Panel": "1"})
+    assert r.status_code == 202
+    card = wait_revised(client, scene["scene_id"])
+    assert card["review"]["revise_error"] == "Нет связи с DeepSeek 300 с"
+    assert [l["text"] for l in card["script"]] == [l["text"] for l in scene["script"]]   # сценарий прежний
+
+
 def test_api_generate_loop(cfg):
     """Галочка «петля» у переписок: задачи сценариев с loop, у историй петли нет."""
     client = TestClient(panel.app.create_app(cfg))

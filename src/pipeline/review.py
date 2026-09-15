@@ -53,6 +53,31 @@ def mark_auto_approved(scene: dict) -> dict:
     return scene
 
 
+def mark_rejected(scene: dict, reason: str) -> dict:
+    """Отклонён без владельца (оценка редактора ниже порога) — виден в «Отклонённых», можно вернуть."""
+    now = _now()
+    scene.setdefault("meta", {})["review"] = {"status": "rejected", "auto": True, "reason": reason,
+                                              "created_at": now, "decided_at": now}
+    return scene
+
+
+REVISE_STALE_S = 600   # «переписывается» дольше — панель упала посреди запроса, отметка не действует
+
+
+def revising(scene: dict) -> bool:
+    """DeepSeek сейчас переписывает сценарий по правке владельца (панель, фоном)."""
+    started = scene.get("meta", {}).get("review", {}).get("revising")
+    try:
+        return (datetime.now(timezone.utc) - datetime.fromisoformat(started)).total_seconds() < REVISE_STALE_S
+    except (TypeError, ValueError):
+        return False
+
+
+def _not_revising(scene: dict) -> None:
+    if revising(scene):
+        raise ReviewError("DeepSeek ещё переписывает этот сценарий — подождите")
+
+
 def _state_path(cfg: dict) -> Path:
     return output_dir(cfg, "review-state.json")
 
@@ -108,6 +133,7 @@ def set_texts(cfg: dict, scene_id: str, texts: list[str], emotions: list[str] | 
     scene, path = _load(cfg, scene_id)
     if review_status(scene) != "pending":
         raise ReviewError("Править можно только сценарий, ожидающий решения")
+    _not_revising(scene)
     if len(texts) != len(scene["script"]):
         raise ReviewError(f"Ожидалось {len(scene['script'])} реплик, пришло {len(texts)}")
     if emotions is None:
@@ -131,6 +157,7 @@ def approve(cfg: dict, scene_id: str, queue) -> list[int]:
     scene, path = _load(cfg, scene_id)
     if review_status(scene) != "pending":
         raise ReviewError(f"Сценарий уже {review_status(scene) or 'без отбора'}")
+    _not_revising(scene)
     scene["meta"]["review"].update(status="approved", decided_at=_now())
     save_scene(scene, path)
     ids = queue.enqueue_chain(processing_chain(scene, cfg, path))
@@ -142,9 +169,47 @@ def reject(cfg: dict, scene_id: str) -> dict:
     scene, path = _load(cfg, scene_id)
     if review_status(scene) != "pending":
         raise ReviewError(f"Сценарий уже {review_status(scene) or 'без отбора'}")
+    _not_revising(scene)
     scene["meta"]["review"].update(status="rejected", decided_at=_now())
     save_scene(scene, path)
     return scene
+
+
+def start_revision(cfg: dict, scene_id: str, note: str) -> dict:
+    """Отметить, что сценарий переписывается по правке владельца; сам запрос к DeepSeek идёт фоном
+    (finish_revision). Пока идёт — править, одобрять и отклонять нельзя."""
+    scene, path = _load(cfg, scene_id)
+    if review_status(scene) != "pending":
+        raise ReviewError("Переписать можно только сценарий, ожидающий решения")
+    _not_revising(scene)
+    if not " ".join(note.split()):
+        raise ReviewError("Напишите, что изменить")
+    review = scene["meta"]["review"]
+    review["revising"] = _now()
+    review.pop("revise_error", None)
+    save_scene(scene, path)
+    return scene
+
+
+def finish_revision(cfg: dict, scene_id: str, revise) -> dict:
+    """revise(сцена) → переписанная сцена (DeepSeek). Сохраняется, пока сценарий ждёт решения;
+    ошибка — в meta.review.revise_error, сценарий остаётся прежним."""
+    scene, path = _load(cfg, scene_id)
+    try:
+        new = revise(scene)
+    except Exception as e:
+        log.warning("Переписать «%s» по правке не удалось: %s", scene["meta"].get("title", scene_id), e)
+        new, error = None, str(e)[:300]
+    scene, path = _load(cfg, scene_id)   # за время запроса сценарий могли удалить — тогда ReviewError
+    review = {k: v for k, v in scene["meta"]["review"].items() if k not in ("revising", "revise_error")}
+    if new is None or review.get("status") != "pending":
+        scene["meta"]["review"] = review if new else {**review, "revise_error": error}
+        save_scene(scene, path)
+        return scene
+    new["meta"]["review"] = {**review, "revised_at": _now()}
+    save_scene(new, path)
+    log.info("«%s» переписан по правке", new["meta"].get("title", scene_id))
+    return new
 
 
 def delete_scenes(cfg: dict, status: str, ids: Collection[str] | None = None) -> int:

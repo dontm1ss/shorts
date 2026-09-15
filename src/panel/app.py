@@ -31,8 +31,8 @@ from core.scene import output_dir, scene_path
 from notify import notify
 from pipeline import manifest
 from pipeline.queue import WorkerLock
-from pipeline.review import (ReviewError, approve, auto_approve, delete_scenes, list_scenes, reject, restore,
-                             set_auto_approve, set_texts)
+from pipeline.review import (ReviewError, approve, auto_approve, delete_scenes, finish_revision, list_scenes,
+                             reject, restore, revising, set_auto_approve, set_texts, start_revision)
 from pipeline.worker import open_queue
 from scripting import estimate_duration_s, word_count
 
@@ -61,6 +61,12 @@ class SettingsBody(BaseModel):
     auto_approve: bool
 
 
+class ReviseBody(BaseModel):
+    note: str                              # что изменить — своими словами
+    texts: list[str] | None = None         # несохранённые правки карточки — применяются до переписывания
+    emotions: list[str] | None = None
+
+
 def scene_card(scene: dict, cfg: dict) -> dict:
     meta = scene.get("meta", {})
     script = [{"speaker": line["speaker"], "text": line["text"], "emotion": line.get("emotion", DEFAULT_EMOTION)}
@@ -75,6 +81,8 @@ def scene_card(scene: dict, cfg: dict) -> dict:
         "contacts": meta.get("contacts", {}),
         "genders": meta.get("genders", {}),
         "review": meta.get("review", {}),
+        "revising": revising(scene),
+        "score": meta.get("score"),
         "loop": bool(meta.get("loop")),
         "loop_idea": meta.get("loop_idea", ""),
         "script": script,
@@ -161,6 +169,27 @@ def start_worker(cfg: dict) -> bool:
         subprocess.Popen([sys.executable, "-m", "pipeline", "worker", "--watch"], cwd=ROOT, env=env,
                          stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, **kwargs)
     return True
+
+
+def revise_in_background(cfg: dict, scene_id: str, note: str) -> None:
+    """Правка владельца → DeepSeek переписывает сценарий (и заново оценивает). Идёт в потоке панели:
+    ответ DeepSeek может занять минуты, а запрос браузера с телефона столько не ждёт."""
+    from scripting import DeepSeekClient, DeepSeekError, ScriptError, revise_scene, score_scene
+
+    def revise(scene: dict) -> dict:
+        client = DeepSeekClient(cfg)
+        new = revise_scene(scene, note, client, cfg)
+        if cfg["scoring"]["enabled"]:
+            try:
+                new["meta"]["score"] = score_scene(new, client, cfg)
+            except (DeepSeekError, ScriptError) as e:
+                log.warning("Оценить переписанный сценарий не удалось: %s", e)
+        return new
+
+    try:
+        finish_revision(cfg, scene_id, revise)
+    except Exception:   # сценарий удалили, пока DeepSeek отвечал, и т.п.
+        log.exception("Переписывание по правке")
 
 
 def ensure_worker(cfg: dict) -> int:
@@ -256,11 +285,33 @@ def create_app(cfg: dict) -> FastAPI:
                        "pause_s": cfg["tts"]["pause_between_lines_ms"] / 1000,
                        "min_s": s["min_duration_s"], "max_s": s["max_duration_s"]},
             "emotions": [{"id": key, "label": label} for key, (label, _) in EMOTIONS.items()],
+            "scoring": {"enabled": cfg["scoring"]["enabled"], "min_score": cfg["scoring"]["min_score"]},
         }
 
     @app.get("/api/scenes")
     def scenes(status: str = "pending"):
         return [scene_card(s, cfg) for s in list_scenes(cfg, status)]
+
+    @app.get("/api/scenes/{scene_id}")
+    def one_scene(scene_id: str):
+        path = scene_path(cfg, scene_id) if SCENE_ID.match(scene_id) else None
+        if path is None or not path.is_file():
+            raise HTTPException(status_code=404, detail="Нет такого сценария")
+        return scene_card(json.loads(path.read_text(encoding="utf-8")), cfg)
+
+    @app.post("/api/scenes/{scene_id}/revise", status_code=202)
+    def revise_scene(scene_id: str, body: ReviseBody):
+        """Переписать по правке: правки карточки сохраняются, DeepSeek работает фоном —
+        карточка ждёт, пока revising не станет false."""
+        try:
+            if body.texts is not None:
+                set_texts(cfg, scene_id, body.texts, body.emotions)
+            start_revision(cfg, scene_id, body.note)
+        except ReviewError as e:
+            fail(e)
+        threading.Thread(target=revise_in_background, args=(cfg, scene_id, " ".join(body.note.split())),
+                         name=f"revise-{scene_id[:8]}", daemon=True).start()
+        return {"status": "started"}
 
     @app.put("/api/scenes/{scene_id}/script")
     def save_texts(scene_id: str, body: TextsBody):

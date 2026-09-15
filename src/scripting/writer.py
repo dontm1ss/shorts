@@ -271,3 +271,85 @@ def rewrite_scene_length(scene: dict, current_s: float, client: DeepSeekClient, 
     # пол героев не меняется при переписывании — голос озвучки остаётся тем же
     new["meta"]["genders"] = {**new["meta"].get("genders", {}), **scene.get("meta", {}).get("genders", {})}
     return validate_scene(new)
+
+
+# --- оценка и переписывание по замечаниям -----------------------------------------------
+
+SCORE_KEYS = ("hook", "twists", "ending", "language")
+
+
+def _script_text(scene: dict) -> str:
+    """Сценарий для редактора: история — текстом, переписка — репликами с именами героев."""
+    meta = scene.get("meta", {})
+    if scene["type"] == "imessage_drama":
+        names = meta.get("contacts", {})
+        lines = "\n".join(f"{names.get(l['speaker'], l['speaker'])}: {l['text']}" for l in scene["script"])
+        loop = "\n\n(Петля: после последнего сообщения ролик сразу начинается с первого.)" if meta.get("loop") else ""
+        return (f"Переписка «{meta.get('title', '')}». Серые пузыри — {names.get('A', 'A')}, "
+                f"синие — {names.get('B', 'B')} (владелец телефона).\n\n{lines}{loop}")
+    return f"История «{meta.get('title', '')}» от первого лица:\n\n" + "\n\n".join(l["text"] for l in scene["script"])
+
+
+def _check_score(data: dict) -> dict:
+    def points(value) -> int | None:
+        try:
+            return max(1, min(10, round(float(value))))
+        except (TypeError, ValueError):
+            return None
+
+    parts = {key: points(data.get(key)) for key in SCORE_KEYS}
+    if None in parts.values():
+        raise ScriptError(f"DeepSeek вернул оценку без баллов: {str(data)[:200]}")
+    text = lambda key, limit: " ".join(str(data.get(key) or "").split())[:limit]  # noqa: E731
+    # fix целиком — по нему сценарий переписывается (у DeepSeek выходит до ~1000 знаков)
+    return {**parts, "total": points(data.get("total")) or round(sum(parts.values()) / len(parts)),
+            "verdict": text("verdict", 500), "fix": text("fix", 2000)}
+
+
+def score_scene(scene: dict, client: DeepSeekClient, cfg: dict) -> dict:
+    """Оценка DeepSeek-редактора 1–10: крючок, повороты, концовка (у петли — стык), язык, общая;
+    вердикт и что переписать (fix)."""
+    drama = scene["type"] == "imessage_drama"
+    system = prompts.CRITIC_SYSTEM.format(
+        what="переписку для ролика в формате iMessage" if drama else "историю для озвучки от первого лица",
+        first_units="первые одно-два сообщения" if drama else "первые одна-две фразы",
+        ending=prompts.CRITIC_ENDING_LOOP if scene.get("meta", {}).get("loop") else prompts.CRITIC_ENDING)
+    return _check_score(client.chat_json(system, _script_text(scene), 0.2))
+
+
+def revise_story(story: dict, note: str, client: DeepSeekClient, cfg: dict) -> dict:
+    system = prompts.REVISE_STORY_SYSTEM.format(
+        note=note, current_words=word_count(story["text"]), max_words=_limits(cfg, _EST_STORY_PARTS)["max_words"],
+        style_reminder=prompts.STYLE_REMINDER, format_rules=prompts.FORMAT_RULES,
+        emotion_rule=prompts.ADJUST_EMOTION_RULE.format(unit="фрагмента"))
+    user = json.dumps({"title": story["title"], "gender": story.get("gender"), "parts": story["parts"]},
+                      ensure_ascii=False)
+    return _check_story(client.chat_json(system, user, 0.7))
+
+
+def revise_drama(drama: dict, note: str, client: DeepSeekClient, cfg: dict) -> dict:
+    system = prompts.REVISE_DRAMA_SYSTEM.format(
+        note=note, current_words=sum(word_count(m["text"]) for m in drama["messages"]),
+        max_words=_limits(cfg, _EST_DRAMA_MESSAGES)["max_words"],
+        style_reminder=prompts.STYLE_REMINDER, format_rules=prompts.FORMAT_RULES,
+        emotion_rule=prompts.ADJUST_EMOTION_RULE.format(unit="сообщения"),
+        loop_rule=prompts.ADJUST_LOOP_RULE if drama.get("loop") else "")
+    new = _check_drama(client.chat_json(system, json.dumps(drama, ensure_ascii=False), 0.7))
+    if drama.get("loop"):
+        new.update(loop=True, loop_idea=drama.get("loop_idea", ""))
+    return new
+
+
+def revise_scene(scene: dict, note: str, client: DeepSeekClient, cfg: dict) -> dict:
+    """Переписать сценарий по замечаниям — редактора (оценка ниже порога) или владельца (панель).
+    Сцена та же: scene_id, отбор, оформление, пол героев и петля сохраняются; прежняя оценка снимается."""
+    meta = scene.get("meta", {})
+    if scene["type"] == "imessage_drama":
+        new = drama_scene(revise_drama(scene_drama(scene), note, client, cfg), cfg, meta.get("topic"))
+    else:
+        new = story_scene(revise_story(scene_story(scene), note, client, cfg), cfg, meta.get("source"),
+                          meta.get("topic"))
+    new.update(scene_id=scene["scene_id"], created_at=scene["created_at"], output=scene["output"])
+    new["meta"] = {**meta, **new["meta"], "genders": {**new["meta"].get("genders", {}), **meta.get("genders", {})}}
+    new["meta"].pop("score", None)
+    return validate_scene(new)

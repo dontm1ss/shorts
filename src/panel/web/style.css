@@ -289,6 +289,14 @@ select.emo:not([data-emotion="neutral"]) { color: var(--accent); border-color: c
 }
 .card-foot .hint { margin-right: auto; font-size: 12px; color: var(--muted); align-self: center; }
 
+/* оценка DeepSeek-редактора и переписывание по правке */
+.score-note { font-size: 12px; color: var(--muted); }
+.error-note { font-size: 12px; color: var(--bad); }
+.revise { display: grid; gap: 6px; padding: 0 14px 10px; }
+.revise .note { width: 100%; resize: vertical; line-height: 1.4; }
+.revise-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.card.revising .card-body, .card.revising .card-head { opacity: 0.55; }
+
 /* --- готовые видео ------------------------------------------------------------- */
 
 .videos { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
