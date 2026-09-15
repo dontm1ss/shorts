@@ -224,6 +224,81 @@ def _records(folder, *names):
     return folder
 
 
+def _peak_hz(path):
+    wav, sr = sf.read(path)
+    wav = wav if wav.ndim == 1 else wav.mean(axis=1)
+    spectrum = np.abs(np.fft.rfft(wav * np.hanning(len(wav))))
+    return np.fft.rfftfreq(len(wav), 1 / sr)[spectrum.argmax()]
+
+
+def test_same_gender_roles_get_distinct_voices(dev_cfg, tmp_path):
+    """Двое мужчин в переписке: первый заговоривший — со своими записями, второй — с теми же, но
+    сдвинутыми по высоте (или со вторым набором записей, если он есть)."""
+    male = tmp_path / "male"
+    male.mkdir()
+    tone = 0.3 * np.sin(2 * np.pi * 220 * np.arange(2 * SR) / SR)
+    for name in ("neutral.wav", "anger.wav"):
+        sf.write(male / name, tone.astype(np.float32), SR)
+    dev_cfg["paths"]["output"] = str(tmp_path / "out")
+    dev_cfg["tts"]["voices"].update(male=str(male))
+    scene = mock_scene("imessage_drama")                          # A, B, A, B
+    scene["meta"]["genders"] = {"A": "male", "B": "male"}
+    scene["script"][1]["emotion"] = "anger"
+    engine = FakeEngine(dev_cfg)
+    synthesize_scene(scene, engine, out_path=tmp_path / "o.wav")
+    voices = [v for _, v in engine.calls]
+    assert voices[0] == voices[2] == male / "neutral.wav"         # A заговорил первым — свой голос
+    shifted = voices[1]
+    assert shifted.parent == tmp_path / "out" / "cache" / "voices" and shifted.stem.startswith("anger_+2.5st")
+    assert _peak_hz(shifted) == pytest.approx(220 * 2 ** (2.5 / 12), rel=0.02)     # выше на 2.5 полутона
+    assert voices[3] != voices[1] and voices[3].stem.startswith("neutral_+2.5st")   # у каждой эмоции своя копия
+
+    engine = FakeEngine(dev_cfg)                                   # второй раз — из кэша, тот же файл
+    synthesize_scene(scene, engine, out_path=tmp_path / "o.wav")
+    assert [v for _, v in engine.calls] == voices
+
+    second = _records(tmp_path / "male2", "neutral.wav")          # есть второй набор записей — без сдвига
+    dev_cfg["tts"]["voices"]["male_2"] = str(second)
+    engine = FakeEngine(dev_cfg)
+    synthesize_scene(scene, engine, out_path=tmp_path / "o.wav")
+    assert [v for _, v in engine.calls] == [male / "neutral.wav", second / "neutral.wav"] * 2
+
+
+def test_shift_without_rubberband(tmp_path, monkeypatch):
+    """ffmpeg без rubberband (Mac): та же высота через частоту дискретизации, темп прежний."""
+    import tts.scene as scene_mod
+    real = scene_mod.run_ffmpeg
+
+    def no_rubberband(args, **kw):
+        if "rubberband" in args[args.index("-af") + 1]:
+            raise scene_mod.MediaError("No such filter: 'rubberband'")
+        return real(args, **kw)
+
+    monkeypatch.setattr(scene_mod, "run_ffmpeg", no_rubberband)
+    src = tmp_path / "neutral.wav"
+    sf.write(src, (0.3 * np.sin(2 * np.pi * 220 * np.arange(2 * SR) / SR)).astype(np.float32), SR)
+    out = scene_mod.shifted_reference(src, 3, tmp_path / "cache")
+    assert _peak_hz(out) == pytest.approx(220 * 2 ** (3 / 12), rel=0.02)
+    assert sf.info(out).duration == pytest.approx(2.0, abs=0.05)
+
+
+def test_distinct_voices_only_when_shared(dev_cfg, tmp_path):
+    from tts.scene import second_voices
+    male, female = _records(tmp_path / "male", "neutral.wav"), _records(tmp_path / "female", "neutral.wav")
+    voices = {"male": str(male), "female": str(female), "male_2": str(tmp_path / "нет"), "A": "", "B": ""}
+    script = [{"speaker": s} for s in "BAB"]
+    shifts = dev_cfg["tts"]["second_voice"]
+    assert second_voices(script, voices, {"A": "male", "B": "female"}, shifts)[1] == {}     # разный пол
+    same = second_voices(script, voices, {"A": "male", "B": "male"}, shifts)
+    assert same[1] == {"A": shifts["male"]} and same[0]["A"] == ""       # B первым — A сдвиг; папки male_2 нет
+    assert second_voices(script, {**voices, "A": str(female / "neutral.wav")},             # у роли свой голос
+                         {"A": "male", "B": "male"}, shifts)[1] == {}
+    assert second_voices(script, voices, {"A": "male", "B": "male"}, {"male": 0})[1] == {}  # сдвиг выключен
+    three = [{"speaker": s} for s in "ABC"]                        # третьей — сдвиг в другую сторону
+    assert second_voices(three, voices, dict.fromkeys("ABC", "female"), shifts)[1] == {"B": shifts["female"],
+                                                                                        "C": -shifts["female"]}
+
+
 def test_emotion_reference_choice(tmp_path):
     """Запись эмоции реплики → neutral → любая записанная эмоция → встроенный голос."""
     from tts.scene import find_reference

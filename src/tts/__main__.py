@@ -22,8 +22,8 @@ from core.config import ROOT, load_config
 from core.emotions import EMOTIONS
 from core.scene import load_scene, rel_path, save_scene, scene_path
 from tts.engine import TTSEngine
-from tts.scene import (AUDIO_EXTS, default_audio_path, emotion_params, resolve_voice, synthesize_scene,
-                       voice_source)
+from tts.scene import (AUDIO_EXTS, default_audio_path, emotion_params, resolve_voice, second_voices,
+                       synthesize_scene, voice_source)
 
 log = logging.getLogger("tts")
 
@@ -33,7 +33,8 @@ def _cmd_scene(args, cfg, engine: TTSEngine) -> int:
     voices = cfg["tts"]["voices"]
     speakers = {line["speaker"] for line in scene.get("script", [])}
     genders = scene.get("meta", {}).get("genders", {})
-    chosen = {voices.get(s) or voices.get(genders.get(s) or "", "") for s in speakers}
+    role_voices, shifts = second_voices(scene.get("script", []), voices, genders, cfg["tts"]["second_voice"])
+    chosen = {(role_voices.get(s) or role_voices.get(genders.get(s) or "", ""), shifts.get(s, 0)) for s in speakers}
     if len(speakers) > 1 and len(chosen) == 1:
         log.warning("Все роли (%s) озвучены одним голосом — задайте tts.voices в config/base.toml",
                     ", ".join(sorted(speakers)))
@@ -145,7 +146,7 @@ def check_folder(folder: Path) -> list[str]:
 
 def _cmd_voices(args, cfg, engine: TTSEngine) -> int:
     voices = cfg["tts"]["voices"]
-    for role in [r for r in ("female", "male", "narrator", "A", "B") if voices.get(r)]:
+    for role in [r for r in ("female", "male", "female_2", "male_2", "narrator", "A", "B") if voices.get(r)]:
         source = voice_source(role, voices)
         if source.is_file():
             log.info("%s: один файл на все эмоции — %s", role, rel_path(source))

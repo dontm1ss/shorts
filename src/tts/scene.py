@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import logging
+import os
 from pathlib import Path
 
 import numpy as np
@@ -10,7 +12,8 @@ import soundfile as sf
 
 from core.config import ROOT
 from core.emotions import DEFAULT as DEFAULT_EMOTION, EMOTIONS
-from core.scene import SceneError, rel_path, validate_scene, work_dir
+from core.media import MediaError, run_ffmpeg
+from core.scene import SceneError, output_dir, rel_path, validate_scene, work_dir
 from subtitles.align import Word, load_words, save_words
 from tts.engine import TTSEngine
 
@@ -52,6 +55,51 @@ def resolve_voice(speaker: str, voices: dict, gender: str | None = None,
     return find_reference(source, emotion or DEFAULT_EMOTION) if source.is_dir() else None
 
 
+def second_voices(script: list[dict], voices: dict, genders: dict, shifts: dict) -> tuple[dict, dict]:
+    """Два героя с одним источником голоса (одного пола — общая папка записей) звучали бы одинаково.
+    Роль, заговорившая первой, остаётся со своим голосом, следующая получает второй набор записей
+    пола (<пол>_2 в tts.voices), а без него — те же записи со сдвигом высоты (tts.second_voice;
+    третья такая роль — со сдвигом в другую сторону). Возвращает (tts.voices с голосами ролей
+    из второго набора, {роль: сдвиг в полутонах})."""
+    role_voices, role_shifts, taken = dict(voices), {}, {}
+    for speaker in dict.fromkeys(line["speaker"] for line in script):   # в порядке первой реплики
+        gender = genders.get(speaker)
+        source = voice_source(speaker, voices, gender)
+        if source is None:
+            continue
+        before = taken.setdefault(source, [])
+        before.append(speaker)
+        if len(before) == 1:
+            continue
+        second = voice_source(speaker, {speaker: voices.get(f"{gender}_2", "")}) if gender else None
+        if len(before) == 2 and second is not None and (second.is_file() or second.is_dir()
+                                                        and find_reference(second, DEFAULT_EMOTION)):
+            role_voices[speaker] = str(second)
+        elif shift := shifts.get(gender or "", 0):
+            role_shifts[speaker] = shift if len(before) == 2 else -shift
+    return role_voices, role_shifts
+
+
+def shifted_reference(path: Path, semitones: float, cache_dir: Path) -> Path:
+    """Копия записи-референса, сдвинутая по высоте вместе с формантами: голос другого «размера»,
+    а не тот же человек выше или ниже. Модель клонирует голос уже из неё, поэтому звучит естественно.
+    Кэш — по пути, дате изменения записи и сдвигу."""
+    key = hashlib.sha1(f"{path.resolve()}|{path.stat().st_mtime_ns}|{semitones}".encode()).hexdigest()[:10]
+    out = cache_dir / f"{path.stem}_{semitones:+g}st_{key}.wav"
+    if out.exists():
+        return out
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(".tmp.wav")
+    ratio = 2 ** (semitones / 12)
+    try:
+        run_ffmpeg(["-i", str(path), "-af", f"rubberband=pitch={ratio:.6f}:pitchq=quality", str(tmp)])
+    except MediaError:   # ffmpeg без rubberband (Mac): та же высота через частоту дискретизации
+        run_ffmpeg(["-i", str(path), "-af", f"aresample=48000,asetrate={48000 * ratio:.0f},"
+                                            f"aresample=48000,atempo={1 / ratio:.6f}", str(tmp)])
+    os.replace(tmp, out)
+    return out
+
+
 def emotion_params(params: dict, emotions: dict, emotion: str | None) -> dict:
     """Параметры пресета + поправка эмоции (tts.emotions)."""
     shift = emotions.get(emotion or DEFAULT_EMOTION, {})
@@ -88,16 +136,25 @@ def synthesize_scene(scene: dict, engine: TTSEngine, preset: str | None = None,
                           if s in genders and not voices.get(s) and not voices.get(genders[s])}):
         log.warning("Нет референс-голоса для пола %s (tts.voices в config/base.toml) — "
                     "эти роли озвучит встроенный голос", ", ".join(missing))
+    # два героя одного пола — разные голоса: второй набор записей или сдвиг высоты
+    role_voices, shifts = second_voices(scene["script"], voices, genders, tts_cfg["second_voice"])
+    for speaker in sorted(set(shifts) | {s for s, v in role_voices.items() if v != voices.get(s)}):
+        log.info("Роль %s — голос тот же, что у другой роли: %s", speaker,
+                 f"записи со сдвигом {shifts[speaker]:+g} полутона" if speaker in shifts
+                 else f"второй набор записей {role_voices[speaker]}")
+    shifted_cache = output_dir(engine.cfg, "cache", "voices")
 
     parts, cursor, all_words = [], 0, []
     no_record: dict[Path, set[str]] = {}      # папка голоса → эмоции без своей записи
     for i, line in enumerate(scene["script"]):
         emotion = line.get("emotion") or DEFAULT_EMOTION
         gender = genders.get(line["speaker"])
-        voice = resolve_voice(line["speaker"], voices, gender, emotion)
-        if (source := voice_source(line["speaker"], voices, gender)) and not source.is_file():
+        voice = resolve_voice(line["speaker"], role_voices, gender, emotion)
+        if (source := voice_source(line["speaker"], role_voices, gender)) and not source.is_file():
             if voice is None or voice.stem != emotion:
                 no_record.setdefault(source, set()).add(emotion)
+        if voice is not None and line["speaker"] in shifts:
+            voice = shifted_reference(voice, shifts[line["speaker"]], shifted_cache)
         line_params = emotion_params(params, tts_cfg["emotions"], emotion)
         audio, stressed, words = engine.synthesize_with_words(line["text"], line_params, voice,
                                                               seed=seed + 1000 * i)
