@@ -117,6 +117,47 @@ input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 
 .gen input[type="number"] { width: 64px; }
 .gen .topic { flex: 1 1 180px; }
 
+/* автоодобрение: переключатель */
+.auto {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  cursor: pointer;
+}
+.auto input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.auto .switch {
+  flex: none;
+  position: relative;
+  width: 40px;
+  height: 24px;
+  border-radius: 999px;
+  background: var(--line);
+  transition: background 0.15s;
+}
+.auto .switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  transition: transform 0.15s;
+}
+.auto input:checked + .switch { background: var(--ok); }
+.auto input:checked + .switch::after { transform: translateX(16px); }
+.auto input:focus-visible + .switch { outline: 2px solid var(--accent); outline-offset: 2px; }
+.auto input:disabled + .switch { opacity: 0.5; }
+.auto-text { display: flex; flex-wrap: wrap; gap: 0 8px; align-items: baseline; }
+.auto-text span { font-size: 13px; color: var(--muted); }
+
 /* --- вкладки ------------------------------------------------------------------ */
 
 .tabs {
@@ -228,6 +269,9 @@ select.emo:not([data-emotion="neutral"]) { color: var(--accent); border-color: c
 .video video { display: block; width: 100%; aspect-ratio: 9 / 16; background: #000; }
 .video .info { padding: 8px 10px 10px; display: grid; gap: 4px; }
 .video .info b { font-size: 14px; }
+.video .actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px; }
+.video .actions a { color: var(--accent); text-decoration: none; font-weight: 600; }
+.video .actions button { padding: 5px 10px; font-size: 13px; }
 
 /* --- очередь -------------------------------------------------------------------- */
 

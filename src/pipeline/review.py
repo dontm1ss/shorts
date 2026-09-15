@@ -3,11 +3,13 @@
 Сценарий после DeepSeek сохраняется со статусом meta.review.status = "pending" и в работу
 не идёт. Одобренный — ставится в очередь цепочкой озвучка → (субтитры / интерфейс) → рендер,
 отклонённый — остаётся на диске со статусом "rejected" (можно вернуть).
+Автоодобрение (переключатель в панели) — новые сценарии сразу одобряются и идут в работу.
 """
 from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -42,6 +44,35 @@ def processing_chain(scene: dict, cfg: dict, path: Path) -> list[dict]:
 def mark_pending(scene: dict) -> dict:
     scene.setdefault("meta", {})["review"] = {"status": "pending", "created_at": _now()}
     return scene
+
+
+def mark_auto_approved(scene: dict) -> dict:
+    now = _now()
+    scene.setdefault("meta", {})["review"] = {"status": "approved", "auto": True, "created_at": now, "decided_at": now}
+    return scene
+
+
+def _state_path(cfg: dict) -> Path:
+    return output_dir(cfg, "review-state.json")
+
+
+def auto_approve(cfg: dict) -> bool:
+    """Включено ли автоодобрение: переключатель панели, по умолчанию — review.auto_approve."""
+    try:
+        return bool(json.loads(_state_path(cfg).read_text(encoding="utf-8"))["auto_approve"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return bool(cfg["review"].get("auto_approve", False))
+
+
+def set_auto_approve(cfg: dict, enabled: bool) -> bool:
+    """Переключатель читают задачи сценариев — они идут отдельными процессами, поэтому файл."""
+    path = _state_path(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"auto_approve": bool(enabled), "changed_at": _now()}), encoding="utf-8")
+    os.replace(tmp, path)
+    log.info("Автоодобрение %s", "включено" if enabled else "выключено")
+    return bool(enabled)
 
 
 def review_status(scene: dict) -> str | None:

@@ -10,6 +10,7 @@
   let tab = "pending";
   let timing = null;
   let emotions = [];   // [{id, label}] — интонации озвучки (core/emotions.py)
+  let autoApprove = false;
   let lastSummary = "";
 
   const $ = (sel) => document.querySelector(sel);
@@ -111,6 +112,10 @@
         ? (s.queue.running ? "обработка идёт" : "обработчик ждёт задач")
         : "обработчик остановлен";
       $("#worker-start").hidden = s.worker_running;
+      $("#auto-row").hidden = !s.review_enabled;
+      const auto = $("#auto-approve");
+      if (!auto.disabled) auto.checked = s.auto_approve;   // не перебивать переключение, пока оно сохраняется
+      autoApprove = s.auto_approve;
       const key = JSON.stringify([s.review, s.queue]);
       if (tab === "queue" && lastSummary !== "") renderQueue();   // время «Длилась» у идущей задачи тикает
       if (key !== lastSummary) {
@@ -213,8 +218,10 @@
 
   async function renderPending() {
     const scenes = await api("/api/scenes?status=pending");
-    content.replaceChildren(...(scenes.length ? scenes.map(sceneCard)
-      : [el("div", { class: "empty", text: "Нет сценариев на проверке. Сгенерируйте истории или переписки выше." })]));
+    const empty = autoApprove
+      ? "Автоодобрение включено — новые сценарии сразу уходят в озвучку. Готовые ролики — на вкладке «Готовые»."
+      : "Нет сценариев на проверке. Сгенерируйте истории или переписки выше.";
+    content.replaceChildren(...(scenes.length ? scenes.map(sceneCard) : [el("div", { class: "empty", text: empty })]));
   }
 
   async function renderRejected() {
@@ -243,17 +250,46 @@
       content.replaceChildren(el("div", { class: "empty", text: "Готовых роликов пока нет." }));
       return;
     }
-    content.replaceChildren(el("div", { class: "videos" }, videos.map((v) => el("div", { class: "video" },
-      v.url ? el("video", { src: v.url, controls: true, preload: "metadata", playsinline: true })
-        : el("div", { class: "empty", text: "файл удалён" }),
+    content.replaceChildren(el("div", { class: "videos" }, videos.map(videoCard)));
+  }
+
+  function videoCard(v) {
+    const title = v.title || TYPE_LABEL[v.type] || v.type;
+    const player = v.url ? el("video", { src: v.url, controls: true, preload: "metadata", playsinline: true }) : null;
+    const del = el("button", { class: "danger", text: "Удалить", onclick: async () => {
+      if (!confirm(`Удалить ролик «${title}»? Файл удалится насовсем.`)) return;
+      del.disabled = true;
+      if (player) {   // отпустить файл: Windows не даст удалить то, что ещё читает плеер
+        player.pause();
+        player.removeAttribute("src");
+        player.load();
+      }
+      try {
+        await api(`/api/videos/${encodeURIComponent(v.scene_id)}`, { method: "DELETE" });
+        card.remove();
+        const left = document.querySelectorAll(".video").length;
+        $("#n-videos").textContent = left || "";
+        if (!left) content.replaceChildren(el("div", { class: "empty", text: "Готовых роликов пока нет." }));
+        toast("Ролик удалён");
+      } catch (e) {
+        toast(e.message, true);
+        del.disabled = false;
+        if (player) player.src = v.url;
+      }
+    } });
+    const card = el("div", { class: "video" },
+      player || el("div", { class: "empty", text: "файл удалён" }),
       el("div", { class: "info" },
-        el("b", { text: v.title || TYPE_LABEL[v.type] || v.type }),
+        el("b", { text: title }),
         el("div", { class: "meta" },
           el("span", { class: "badge", text: TYPE_LABEL[v.type] || v.type }),
           el("span", { text: `${v.duration_s} с` }),
           v.size_mb ? el("span", { text: `${v.size_mb} МБ` }) : null,
           el("span", { text: fmtTime(v.rendered_at) })),
-        v.url ? el("a", { href: v.url, download: "", text: "Скачать" }) : null)))));
+        el("div", { class: "actions" },
+          v.url ? el("a", { href: v.url, download: "", text: "Скачать" }) : el("span"),
+          del)));
+    return card;
   }
 
   async function renderQueue() {
@@ -307,6 +343,26 @@
     } catch (err) { toast(err.message, true); }
     btn.disabled = false;
   }));
+
+  $("#auto-approve").addEventListener("change", async (e) => {
+    const box = e.target;
+    const wanted = box.checked;
+    box.disabled = true;
+    try {
+      const r = await api("/api/settings", { method: "PUT", body: { auto_approve: wanted } });
+      autoApprove = r.auto_approve;
+      const pending = Number($("#n-pending").textContent) || 0;
+      toast(r.auto_approve
+        ? "Автоодобрение включено: новые сценарии сразу идут в озвучку" +
+          (pending ? `. Уже ждущие проверки (${pending}) — одобрите вручную` : "")
+        : "Автоодобрение выключено: новые сценарии ждут проверки");
+      if (tab === "pending") render();
+    } catch (err) {
+      box.checked = !wanted;
+      toast(err.message, true);
+    }
+    box.disabled = false;
+  });
 
   $("#worker-start").addEventListener("click", async () => {
     try { await api("/api/worker/start", { method: "POST" }); toast("Обработчик запущен"); refreshSummary(); }

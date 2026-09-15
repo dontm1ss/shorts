@@ -192,6 +192,8 @@ after_render = ["ui.mov", "clip_audio.wav"]
 # Отбор сценариев: после DeepSeek сценарий ждёт решения в веб-панели (python -m panel) —
 # на озвучку и рендер уходят только одобренные. false — сразу в работу, как раньше.
 enabled = true
+# Автоодобрение по умолчанию; в панели переключается на лету (хранится в output/review-state.json).
+auto_approve = false
 
 [panel]
 host = "127.0.0.1"   # только локально; наружу — через туннель на сервер (docs/panel-deploy.md)

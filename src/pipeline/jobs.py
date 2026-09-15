@@ -43,12 +43,16 @@ class JobContext:
 # --- сценарии -------------------------------------------------------------------
 
 def _after_script(scene: dict, path: Path, cfg: dict) -> dict:
-    """Сценарий готов: на отбор в веб-панель (review.enabled) или сразу в работу."""
-    from pipeline.review import mark_pending, processing_chain
+    """Сценарий готов: на отбор в веб-панель (review.enabled) или сразу в работу
+    (отбор выключен или включено автоодобрение)."""
+    from pipeline.review import auto_approve, mark_auto_approved, mark_pending, processing_chain
     if cfg["review"]["enabled"]:
-        save_scene(mark_pending(scene), path)
-        log.info("Ждёт решения в панели отбора (python -m panel)")
-        return {"scene": rel_path(path), "review": "pending"}
+        if not auto_approve(cfg):
+            save_scene(mark_pending(scene), path)
+            log.info("Ждёт решения в панели отбора (python -m panel)")
+            return {"scene": rel_path(path), "review": "pending"}
+        mark_auto_approved(scene)
+        log.info("Автоодобрение — сразу в озвучку")
     save_scene(scene, path)
     return {"scene": rel_path(path), "next": [processing_chain(scene, cfg, path)]}
 

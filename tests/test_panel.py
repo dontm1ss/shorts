@@ -8,8 +8,9 @@ from fastapi.testclient import TestClient
 import panel.app
 import pipeline.jobs
 from core.scene import load_scene, save_scene, scene_path, work_dir
-from pipeline.review import (ReviewError, approve, list_scenes, mark_pending, processing_chain, reject, restore,
-                             set_texts)
+from pipeline import manifest
+from pipeline.review import (ReviewError, approve, auto_approve, list_scenes, mark_pending, processing_chain, reject,
+                             restore, set_auto_approve, set_texts)
 from pipeline.worker import open_queue
 from subtitles.scene import pick_style
 
@@ -100,6 +101,64 @@ def test_script_waits_for_review(cfg, tmp_path):
     cfg["review"]["enabled"] = False
     result = pipeline.jobs._after_script(dict(scene), path, cfg)
     assert [j["kind"] for j in result["next"][0]] == ["tts_synthesis", "subtitle_generation", "video_render"]
+
+
+def test_auto_approve_sends_script_to_work(cfg):
+    scene = {"scene_id": str(uuid.uuid4()), "type": "imessage_drama", "created_at": "2026-09-15T10:00:00Z",
+             "script": [{"speaker": "A", "text": "Привет."}], "meta": {"title": "Т"},
+             "output": {"resolution": "1080x1920", "path": "output/videos/x.mp4"}}
+    path = scene_path(cfg, scene["scene_id"])
+    assert auto_approve(cfg) is False                                        # по умолчанию — ручная проверка
+    set_auto_approve(cfg, True)
+    result = pipeline.jobs._after_script(dict(scene), path, cfg)
+    assert [j["kind"] for j in result["next"][0]] == ["tts_synthesis", "ui_render", "video_render"]
+    review = load_scene(path)["meta"]["review"]
+    assert review["status"] == "approved" and review["auto"] is True
+    assert list_scenes(cfg, "pending") == []
+
+    set_auto_approve(cfg, False)
+    assert pipeline.jobs._after_script(dict(scene), path, cfg)["review"] == "pending"
+
+
+def test_api_auto_approve_toggle(cfg):
+    client = TestClient(panel.app.create_app(cfg))
+    summary = client.get("/api/summary").json()
+    assert summary["auto_approve"] is False and summary["review_enabled"] is True
+    assert client.put("/api/settings", json={"auto_approve": True}).status_code == 403            # без X-Panel
+    r = client.put("/api/settings", json={"auto_approve": True}, headers={"X-Panel": "1"})
+    assert r.status_code == 200 and r.json() == {"auto_approve": True}
+    assert client.get("/api/summary").json()["auto_approve"] is True
+    assert auto_approve(cfg) is True                                         # задачи сценариев видят то же
+    assert client.put("/api/settings", json={"auto_approve": "да"}, headers={"X-Panel": "1"}).status_code == 422
+
+
+def test_api_delete_video(cfg):
+    client = TestClient(panel.app.create_app(cfg))
+    scene = make_scene(cfg, status="approved")
+    sid = scene["scene_id"]
+    videos = work_dir(cfg, scene).parents[1] / "videos"
+    videos.mkdir(parents=True)
+    video = videos / f"reddit_story_{sid[:8]}.mp4"
+    video.write_bytes(b"\x00" * 100)
+    work = work_dir(cfg, scene)
+    work.mkdir(parents=True)
+    (work / "voice.wav").write_bytes(b"\x00" * 100)
+    other = make_scene(cfg, status="approved")
+    manifest.record(cfg, scene, {"output": f"output/videos/{video.name}", "duration_s": 55.0})
+    manifest.record(cfg, other, {"output": "output/videos/gone.mp4", "duration_s": 50.0})
+    assert len(client.get("/api/videos").json()) == 2
+
+    assert client.delete(f"/api/videos/{sid}").status_code == 403                                 # без X-Panel
+    r = client.delete(f"/api/videos/{sid}", headers={"X-Panel": "1"})
+    assert r.status_code == 200 and r.json() == {"deleted": video.name}
+    assert not video.exists() and not work.exists()
+    assert [v["scene_id"] for v in client.get("/api/videos").json()] == [other["scene_id"]]
+    assert scene_path(cfg, sid).exists()                                     # сценарий остаётся
+    assert client.delete(f"/api/videos/{sid}", headers={"X-Panel": "1"}).status_code == 404
+    assert client.delete("/api/videos/..%2F..%2Fx", headers={"X-Panel": "1"}).status_code == 404
+    # запись без файла (файл удалили руками) тоже убирается
+    assert client.delete(f"/api/videos/{other['scene_id']}", headers={"X-Panel": "1"}).status_code == 200
+    assert client.get("/api/videos").json() == []
 
 
 # --- API панели ---------------------------------------------------------------------

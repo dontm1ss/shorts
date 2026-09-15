@@ -11,8 +11,10 @@ import json
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -22,14 +24,17 @@ from pydantic import BaseModel
 from core.config import ROOT
 from core.emotions import DEFAULT as DEFAULT_EMOTION, EMOTIONS
 from core.scene import output_dir
+from pipeline import manifest
 from pipeline.queue import WorkerLock
-from pipeline.review import ReviewError, approve, list_scenes, reject, restore, set_texts
+from pipeline.review import (ReviewError, approve, auto_approve, list_scenes, reject, restore, set_auto_approve,
+                             set_texts)
 from pipeline.worker import open_queue
 from scripting import estimate_duration_s, word_count
 
 WEB = Path(__file__).resolve().parent / "web"
 STATIC = {"app.js": "text/javascript", "style.css": "text/css"}
 VIDEO_NAME = re.compile(r"^[\w.-]+\.mp4$")
+SCENE_ID = re.compile(r"^[\w-]{1,80}$")
 
 
 class TextsBody(BaseModel):
@@ -41,6 +46,10 @@ class GenerateBody(BaseModel):
     kind: str
     count: int = 1
     topic: str | None = None
+
+
+class SettingsBody(BaseModel):
+    auto_approve: bool
 
 
 def scene_card(scene: dict, cfg: dict) -> dict:
@@ -139,6 +148,8 @@ def create_app(cfg: dict) -> FastAPI:
         return {
             "profile": cfg["profile"]["name"],
             "review": {st: len(list_scenes(cfg, st)) for st in ("pending", "approved", "rejected")},
+            "review_enabled": cfg["review"]["enabled"],
+            "auto_approve": auto_approve(cfg),
             "queue": counts,
             "worker_running": worker_running(cfg),
             "timing": {"wps": s["words_per_second"], "line_overhead_s": s["line_overhead_s"],
@@ -202,6 +213,10 @@ def create_app(cfg: dict) -> FastAPI:
             queue.close()
         return {"jobs": ids, "worker_started": start_worker(cfg)}
 
+    @app.put("/api/settings")
+    def settings(body: SettingsBody):
+        return {"auto_approve": set_auto_approve(cfg, body.auto_approve)}
+
     @app.post("/api/worker/start")
     def worker_start():
         return {"started": start_worker(cfg), "running": True}
@@ -228,6 +243,27 @@ def create_app(cfg: dict) -> FastAPI:
             result.append({**entry, "url": f"/media/videos/{file.name}" if file.is_file() else None,
                            "size_mb": round(file.stat().st_size / 2**20, 1) if file.is_file() else None})
         return result
+
+    @app.delete("/api/videos/{scene_id}")
+    def delete_video(scene_id: str):
+        """Удалить готовый ролик: файл, запись в списке и промежуточные файлы сцены (озвучку)."""
+        entry = manifest.find(cfg, scene_id) if SCENE_ID.match(scene_id) else None
+        if entry is None:
+            raise HTTPException(status_code=404, detail="Нет такого ролика")
+        name = Path(entry.get("output", "")).name
+        file = output_dir(cfg, "videos", name)
+        for attempt in range(4):
+            try:
+                if VIDEO_NAME.match(name) and file.is_file():
+                    file.unlink()
+                break
+            except PermissionError:   # Windows: файл ещё отдаётся плееру — страница его уже отпустила
+                if attempt == 3:
+                    raise HTTPException(status_code=409, detail="Файл занят — остановите видео и попробуйте ещё раз")
+                time.sleep(0.5)
+        shutil.rmtree(output_dir(cfg, "work", scene_id), ignore_errors=True)
+        manifest.remove(cfg, scene_id)
+        return {"deleted": name}
 
     @app.get("/media/videos/{name}")
     def media(name: str):
