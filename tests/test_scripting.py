@@ -35,7 +35,7 @@ def test_word_count():
 
 def test_word_budget_accounts_for_pauses(dev_cfg):
     lo, target, hi = word_budget(dev_cfg)
-    assert (lo, target, hi) == (169, 186, 203)                       # 3.4 слова/с × (50/55/60 с − 0.3 с)
+    assert (lo, target, hi) == (139, 153, 167)                       # 2.8 слова/с × (50/55/60 с − 0.3 с)
     assert word_budget(dev_cfg, messages=20)[1] < target             # паузы между сообщениями съедают время
 
 
@@ -43,7 +43,7 @@ def test_adapt_story_prompt_and_result(dev_cfg):
     client = FakeClient(STORY)
     story = adapt_story({"title": "Neighbor", "text": "He parked in my spot."}, client, dev_cfg)
     system, user = client.calls[0]
-    assert "154–188 слова" in system and "словами" in system             # бюджет с паузами между фрагментами
+    assert "126–154 слова" in system and "словами" in system             # бюджет с паузами между фрагментами
     assert '"gender"' in system                                          # пол рассказчика — для голоса
     assert '"parts"' in system and "- anger — злость" in system          # интонация фрагментов для озвучки
     assert "He parked in my spot." in user
@@ -173,7 +173,7 @@ def test_drama_rejects_unknown_speaker(dev_cfg):
 
 def test_estimate_duration(dev_cfg):
     script = [{"text": "слово " * 24}, {"text": "слово " * 24}]
-    assert estimate_duration_s(script, dev_cfg) == pytest.approx(48 / 3.4 + 0.35 + 2 * 0.3)
+    assert estimate_duration_s(script, dev_cfg) == pytest.approx(48 / 2.8 + 0.35 + 2 * 0.3)
 
 
 def test_rewrite_keeps_identity(dev_cfg):
