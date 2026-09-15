@@ -42,16 +42,20 @@ def _save(path: Path, entries: list[dict]) -> None:
     os.replace(tmp, path)
 
 
+def entries(cfg: dict) -> list[dict]:
+    return _load(_manifest_path(cfg))
+
+
 def find(cfg: dict, scene_id: str) -> dict | None:
-    return next((e for e in _load(_manifest_path(cfg)) if e.get("scene_id") == scene_id), None)
+    return next((e for e in entries(cfg) if e.get("scene_id") == scene_id), None)
 
 
-def remove(cfg: dict, scene_id: str) -> None:
-    """Убирает запись о ролике (ролик удалён из панели)."""
+def remove(cfg: dict, *scene_ids: str) -> None:
+    """Убирает записи о роликах (ролики удалены из панели)."""
     path = _manifest_path(cfg)
-    entries = _load(path)
-    kept = [e for e in entries if e.get("scene_id") != scene_id]
-    if len(kept) != len(entries):
+    current, drop = _load(path), set(scene_ids)
+    kept = [e for e in current if e.get("scene_id") not in drop]
+    if len(kept) != len(current):
         _save(path, kept)
 
 

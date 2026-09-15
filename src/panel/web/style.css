@@ -186,6 +186,20 @@ main { max-width: 900px; margin: 0 auto; padding: 4px 12px 40px; display: grid; 
 
 .empty { text-align: center; color: var(--muted); padding: 40px 12px; }
 
+/* массовые действия над списком */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.toolbar-label { margin-right: auto; font-size: 13px; color: var(--muted); }
+.toolbar button { padding: 7px 12px; font-size: 14px; }
+
 /* --- карточка сценария -------------------------------------------------------- */
 
 .card {
@@ -269,6 +283,7 @@ select.emo:not([data-emotion="neutral"]) { color: var(--accent); border-color: c
 .video video { display: block; width: 100%; aspect-ratio: 9 / 16; background: #000; }
 .video .info { padding: 8px 10px 10px; display: grid; gap: 4px; }
 .video .info b { font-size: 14px; }
+.video .timing { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .video .actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px; }
 .video .actions a { color: var(--accent); text-decoration: none; font-weight: 600; }
 .video .actions button { padding: 5px 10px; font-size: 13px; }

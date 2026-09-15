@@ -68,13 +68,26 @@
       ? time : d.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" }) + " " + time;
   }
 
+  function fmtSeconds(s) {
+    return s < 60 ? `${s} с` : s < 3600 ? `${Math.floor(s / 60)} мин ${s % 60} с` : `${Math.floor(s / 3600)} ч ${Math.floor(s / 60) % 60} мин`;
+  }
+
   // Длительность: завершённая — от старта до конца; идущая — от старта до сейчас
   function duration(job) {
     if (!job.started_at || job.status === "pending") return "—";
     const end = job.status === "running" ? new Date() : new Date(job.finished_at);
     const s = Math.max(0, Math.round((end - new Date(job.started_at)) / 1000));
-    if (isNaN(s)) return "—";
-    return s < 60 ? `${s} с` : s < 3600 ? `${Math.floor(s / 60)} мин ${s % 60} с` : `${Math.floor(s / 3600)} ч ${Math.floor(s / 60) % 60} мин`;
+    return isNaN(s) ? "—" : fmtSeconds(s);
+  }
+
+  // Панель над списком: подпись + кнопки массовых действий
+  function toolbar(label, ...buttons) {
+    return el("div", { class: "toolbar" }, el("span", { class: "toolbar-label", text: label }), ...buttons);
+  }
+
+  function plural(n, one, few, many) {
+    const m10 = n % 10, m100 = n % 100;
+    return m10 === 1 && m100 !== 11 ? one : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? few : many;
   }
 
   function estimate(texts) {
@@ -187,15 +200,25 @@
       }));
     }
 
-    const approveBtn = el("button", { text: "Одобрить", onclick: async () => {
+    // одобрение — и своей кнопкой, и «Одобрить все»: правки текста и интонаций уходят вместе с ним
+    const doApprove = async () => {
       approveBtn.disabled = rejectBtn.disabled = true;
       try {
         const r = await api(`/api/scenes/${scene.scene_id}/approve`,
           { method: "POST", body: { texts: texts(), emotions: lineEmotions() } });
-        toast(`В работе: задачи ${r.jobs.map((j) => "#" + j).join(", ")}${r.worker_started ? " — обработчик запущен" : ""}`);
         card.remove();
+        return r;
+      } catch (e) {
+        approveBtn.disabled = rejectBtn.disabled = false;
+        throw e;
+      }
+    };
+    const approveBtn = el("button", { text: "Одобрить", onclick: async () => {
+      try {
+        const r = await doApprove();
+        toast(`В работе: задачи ${r.jobs.map((j) => "#" + j).join(", ")}${r.worker_started ? " — обработчик запущен" : ""}`);
         refreshSummary();
-      } catch (e) { toast(e.message, true); approveBtn.disabled = rejectBtn.disabled = false; }
+      } catch (e) { toast(e.message, true); }
     } });
     const rejectBtn = el("button", { class: "danger", text: "Отклонить", onclick: async () => {
       approveBtn.disabled = rejectBtn.disabled = true;
@@ -213,6 +236,8 @@
       el("div", { class: "card-foot" },
         el("span", { class: "hint", text: "правки и интонации сохраняются при одобрении; пустой абзац — удаляется" }),
         rejectBtn, approveBtn));
+    card.dataset.scene = scene.scene_id;
+    card.approve = doApprove;
     return card;
   }
 
@@ -221,12 +246,64 @@
     const empty = autoApprove
       ? "Автоодобрение включено — новые сценарии сразу уходят в озвучку. Готовые ролики — на вкладке «Готовые»."
       : "Нет сценариев на проверке. Сгенерируйте истории или переписки выше.";
-    content.replaceChildren(...(scenes.length ? scenes.map(sceneCard) : [el("div", { class: "empty", text: empty })]));
+    if (!scenes.length) {
+      content.replaceChildren(el("div", { class: "empty", text: empty }));
+      return;
+    }
+    const cards = scenes.map(sceneCard);
+    const count = (n) => `${n} ${plural(n, "сценарий", "сценария", "сценариев")}`;
+
+    const approveAll = el("button", { text: "Одобрить все", onclick: async () => {
+      const list = cards.filter((c) => c.isConnected);   // только те, что на странице
+      if (!list.length || !confirm(`Одобрить ${count(list.length)}? Они уйдут в озвучку и рендер.`)) return;
+      approveAll.disabled = deleteAll.disabled = true;
+      let done = 0;
+      for (const card of list) {
+        try {
+          await card.approve();
+          approveAll.textContent = `Одобрено ${++done} из ${list.length}…`;
+        } catch (e) {
+          toast(`Одобрено ${done} из ${list.length}, дальше ошибка: ${e.message}`, true);
+          break;
+        }
+      }
+      if (done === list.length) toast(`Одобрено: ${count(done)} — все ушли в работу`);
+      refreshSummary();
+      render();
+    } });
+
+    const deleteAll = el("button", { class: "danger", text: "Удалить все", onclick: async () => {
+      const ids = cards.filter((c) => c.isConnected).map((c) => c.dataset.scene);
+      if (!ids.length || !confirm(`Удалить ${count(ids.length)} на проверке? Удаление необратимо.`)) return;
+      approveAll.disabled = deleteAll.disabled = true;
+      try {
+        const r = await api("/api/scenes?" + new URLSearchParams([["status", "pending"], ...ids.map((i) => ["ids", i])]),
+          { method: "DELETE" });
+        toast(`Удалено: ${count(r.deleted)}`);
+      } catch (e) { toast(e.message, true); }
+      refreshSummary();
+      render();
+    } });
+
+    content.replaceChildren(toolbar(`${count(scenes.length)} на проверке`, deleteAll, approveAll), ...cards);
   }
 
   async function renderRejected() {
     const scenes = await api("/api/scenes?status=rejected");
-    content.replaceChildren(...(scenes.length ? scenes.map((scene) => {
+    const deleteAll = el("button", { class: "danger", text: "Удалить все", onclick: async () => {
+      const n = scenes.length;
+      if (!confirm(`Удалить все отклонённые (${n})? Удаление необратимо.`)) return;
+      deleteAll.disabled = true;
+      try {
+        const r = await api("/api/scenes?" + new URLSearchParams([["status", "rejected"],
+          ...scenes.map((s) => ["ids", s.scene_id])]), { method: "DELETE" });
+        toast(`Удалено отклонённых: ${r.deleted}`);
+      } catch (e) { toast(e.message, true); }
+      refreshSummary();
+      render();
+    } });
+    content.replaceChildren(...(scenes.length ? [toolbar(`Отклонённых: ${scenes.length}`, deleteAll)] : []),
+      ...(scenes.length ? scenes.map((scene) => {
       const btn = el("button", { class: "ghost", text: "Вернуть на проверку", onclick: async () => {
         try { await api(`/api/scenes/${scene.scene_id}/restore`, { method: "POST" }); card.remove(); refreshSummary(); }
         catch (e) { toast(e.message, true); }
@@ -250,7 +327,40 @@
       content.replaceChildren(el("div", { class: "empty", text: "Готовых роликов пока нет." }));
       return;
     }
-    content.replaceChildren(el("div", { class: "videos" }, videos.map(videoCard)));
+    const deleteAll = el("button", { class: "danger", text: "Удалить все", onclick: async () => {
+      const cards = [...content.querySelectorAll(".video")];
+      if (!cards.length || !confirm(`Удалить все ролики (${cards.length})? Файлы удалятся насовсем.`)) return;
+      deleteAll.disabled = true;
+      for (const player of content.querySelectorAll("video")) {   // отпустить файлы (Windows)
+        player.pause();
+        player.removeAttribute("src");
+        player.load();
+      }
+      try {
+        const ids = cards.map((c) => c.dataset.scene);   // только видимые: свежие ролики не трогаем
+        const r = await api("/api/videos?" + new URLSearchParams(ids.map((i) => ["ids", i])), { method: "DELETE" });
+        toast(`Удалено роликов: ${r.deleted}` + (r.busy ? `, ${r.busy} заняты — попробуйте ещё раз` : ""), r.busy > 0);
+      } catch (e) { toast(e.message, true); }
+      render();
+    } });
+    content.replaceChildren(toolbar(videosLabel(videos.length), deleteAll),
+      el("div", { class: "videos" }, videos.map(videoCard)));
+  }
+
+  function videosLabel(n) {
+    return `${n} ${plural(n, "ролик", "ролика", "роликов")}`;
+  }
+
+  // Сколько делался ролик: от одобрения сценария до готового файла (с ожиданием в очереди)
+  // и чистая работа — озвучка, субтитры или запись интерфейса, рендер
+  function videoTiming(v) {
+    if (v.elapsed_s == null && v.work_s == null) return null;
+    const parts = [];
+    if (v.elapsed_s != null) parts.push(`${fmtSeconds(Math.max(0, v.elapsed_s))} после одобрения`);
+    if (v.work_s != null) parts.push(`работа ${fmtSeconds(v.work_s)}`);
+    return el("div", { class: "timing", text: "⏱ " + parts.join(" · "),
+      title: "от одобрения сценария до готового ролика, включая ожидание в очереди; " +
+             "работа — озвучка, субтитры или запись переписки и рендер" });
   }
 
   function videoCard(v) {
@@ -269,6 +379,8 @@
         card.remove();
         const left = document.querySelectorAll(".video").length;
         $("#n-videos").textContent = left || "";
+        const label = content.querySelector(".toolbar-label");
+        if (label) label.textContent = videosLabel(left);
         if (!left) content.replaceChildren(el("div", { class: "empty", text: "Готовых роликов пока нет." }));
         toast("Ролик удалён");
       } catch (e) {
@@ -286,9 +398,11 @@
           el("span", { text: `${v.duration_s} с` }),
           v.size_mb ? el("span", { text: `${v.size_mb} МБ` }) : null,
           el("span", { text: fmtTime(v.rendered_at) })),
+        videoTiming(v),
         el("div", { class: "actions" },
           v.url ? el("a", { href: v.url, download: "", text: "Скачать" }) : el("span"),
           del)));
+    card.dataset.scene = v.scene_id;
     return card;
   }
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Collection
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -144,6 +145,19 @@ def reject(cfg: dict, scene_id: str) -> dict:
     scene["meta"]["review"].update(status="rejected", decided_at=_now())
     save_scene(scene, path)
     return scene
+
+
+def delete_scenes(cfg: dict, status: str, ids: Collection[str] | None = None) -> int:
+    """Удалить насовсем сценарии на проверке или отклонённые (ids — только эти из них). Одобренные
+    не трогаются — по ним идут задачи озвучки и рендера. Возвращает, сколько удалено."""
+    if status not in ("pending", "rejected"):
+        raise ReviewError("Удалять можно только сценарии на проверке или отклонённые")
+    scenes = [s for s in list_scenes(cfg, status) if ids is None or s["scene_id"] in ids]
+    for scene in scenes:
+        scene_path(cfg, scene["scene_id"]).unlink(missing_ok=True)
+    if scenes:
+        log.info("Удалено сценариев (%s): %d", status, len(scenes))
+    return len(scenes)
 
 
 def restore(cfg: dict, scene_id: str) -> dict:

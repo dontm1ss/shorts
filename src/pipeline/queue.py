@@ -186,10 +186,15 @@ class JobQueue:
             raise KeyError(f"Нет задачи #{job_id}")
         return Job.from_row(row)
 
-    def jobs(self, status: str | None = None, limit: int = 200) -> list[Job]:
-        sql, args = "SELECT * FROM jobs", []
+    def jobs(self, status: str | None = None, limit: int = 200, kinds: Collection[str] | None = None) -> list[Job]:
+        where, args = [], []
         if status:
-            sql, args = sql + " WHERE status=?", [status]
+            where.append("status=?")
+            args.append(status)
+        if kinds:
+            where.append(f"kind IN ({', '.join('?' * len(kinds))})")
+            args += kinds
+        sql = "SELECT * FROM jobs" + (" WHERE " + " AND ".join(where) if where else "")
         rows = self.conn.execute(sql + " ORDER BY id DESC LIMIT ?", (*args, limit)).fetchall()
         return [Job.from_row(r) for r in reversed(rows)]
 

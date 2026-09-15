@@ -132,6 +132,70 @@ def test_api_auto_approve_toggle(cfg):
     assert client.put("/api/settings", json={"auto_approve": "да"}, headers={"X-Panel": "1"}).status_code == 422
 
 
+def test_api_delete_scenes_in_bulk(cfg):
+    client = TestClient(panel.app.create_app(cfg))
+    seen = [make_scene(cfg)["scene_id"] for _ in range(2)]
+    fresh = make_scene(cfg)["scene_id"]                                      # появился после загрузки страницы
+    rejected = [make_scene(cfg, status="rejected")["scene_id"] for _ in range(2)]
+    approved = make_scene(cfg, status="approved")["scene_id"]
+    x = {"X-Panel": "1"}
+
+    assert client.delete("/api/scenes", params={"status": "pending", "ids": seen}).status_code == 403
+    r = client.delete("/api/scenes", params={"status": "pending", "ids": seen}, headers=x)
+    assert r.json() == {"deleted": 2}
+    assert [s["scene_id"] for s in list_scenes(cfg, "pending")] == [fresh]  # невиденный — остался
+    assert client.delete("/api/scenes", params={"status": "rejected"}, headers=x).json() == {"deleted": 2}
+    assert not any(scene_path(cfg, i).exists() for i in seen + rejected)
+    assert client.delete("/api/scenes", params={"status": "approved"}, headers=x).status_code == 400
+    assert scene_path(cfg, approved).exists()                                # одобренные не удаляются
+
+
+def test_api_delete_all_videos_only_listed(cfg):
+    client = TestClient(panel.app.create_app(cfg))
+    videos = work_dir(cfg, {"scene_id": "x"}).parents[1] / "videos"
+    videos.mkdir(parents=True)
+    scenes = [make_scene(cfg, status="approved") for _ in range(3)]
+    for scene in scenes:
+        (videos / f"{scene['scene_id']}.mp4").write_bytes(b"\x00")
+        manifest.record(cfg, scene, {"output": f"output/videos/{scene['scene_id']}.mp4", "duration_s": 50.0})
+    listed = [s["scene_id"] for s in scenes[:2]]
+    r = client.delete("/api/videos", params={"ids": listed}, headers={"X-Panel": "1"})
+    assert r.json() == {"deleted": 2, "busy": 0}
+    assert [v["scene_id"] for v in client.get("/api/videos").json()] == [scenes[2]["scene_id"]]
+    assert sorted(p.name for p in videos.iterdir()) == [f"{scenes[2]['scene_id']}.mp4"]
+
+
+def test_api_videos_show_time_after_approval(cfg):
+    from datetime import datetime, timedelta, timezone
+    client = TestClient(panel.app.create_app(cfg))
+    scene = make_scene(cfg, kind="imessage_drama", status="approved")
+    sid = scene["scene_id"]
+    approved_at = (datetime.now(timezone.utc) - timedelta(minutes=25)).isoformat(timespec="seconds")
+    scene["meta"]["review"]["decided_at"] = approved_at
+    save_scene(scene, scene_path(cfg, sid))
+    manifest.record(cfg, scene, {"output": "output/videos/v.mp4", "duration_s": 55.0})
+
+    queue = open_queue(cfg)
+    payload = {"scene": f"output/scenes/{sid}.json"}
+    spent = {"tts_synthesis": 120, "ui_render": 40, "video_render": 12}
+    for kind, seconds in spent.items():
+        job = queue.enqueue(kind, payload)
+        queue.conn.execute("UPDATE jobs SET status='done', started_at=?, finished_at=? WHERE id=?",
+                           ("2026-09-15T13:00:00", f"2026-09-15T13:{seconds // 60:02d}:{seconds % 60:02d}", job))
+    queue.enqueue("tts_synthesis", {"scene": "output/scenes/other.json"})    # чужая и не выполненная
+    queue.close()
+
+    video = client.get("/api/videos").json()[0]
+    assert video["approved_at"] == approved_at
+    assert 25 * 60 - 5 <= video["elapsed_s"] <= 25 * 60 + 5                 # от одобрения до рендера
+    assert video["work_s"] == 172                                           # озвучка + интерфейс + рендер
+
+    clip = {"scene_id": str(uuid.uuid4()), "type": "video_clip", "created_at": "2026-09-15T10:00:00Z"}
+    manifest.record(cfg, clip, {"output": "output/videos/c.mp4", "duration_s": 30.0})
+    first = client.get("/api/videos").json()[0]
+    assert first["approved_at"] is None and first["elapsed_s"] is None      # у клипов отбора нет
+
+
 def test_api_delete_video(cfg):
     client = TestClient(panel.app.create_app(cfg))
     scene = make_scene(cfg, status="approved")

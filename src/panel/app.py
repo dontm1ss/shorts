@@ -15,19 +15,20 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 
 from core.config import ROOT
 from core.emotions import DEFAULT as DEFAULT_EMOTION, EMOTIONS
-from core.scene import output_dir
+from core.scene import output_dir, scene_path
 from pipeline import manifest
 from pipeline.queue import WorkerLock
-from pipeline.review import (ReviewError, approve, auto_approve, list_scenes, reject, restore, set_auto_approve,
-                             set_texts)
+from pipeline.review import (ReviewError, approve, auto_approve, delete_scenes, list_scenes, reject, restore,
+                             set_auto_approve, set_texts)
 from pipeline.worker import open_queue
 from scripting import estimate_duration_s, word_count
 
@@ -35,6 +36,7 @@ WEB = Path(__file__).resolve().parent / "web"
 STATIC = {"app.js": "text/javascript", "style.css": "text/css"}
 VIDEO_NAME = re.compile(r"^[\w.-]+\.mp4$")
 SCENE_ID = re.compile(r"^[\w-]{1,80}$")
+PROCESSING_KINDS = ("tts_synthesis", "subtitle_generation", "ui_render", "video_render")
 
 
 class TextsBody(BaseModel):
@@ -70,6 +72,60 @@ def scene_card(scene: dict, cfg: dict) -> dict:
         "words": sum(word_count(line["text"]) for line in script),
         "est_s": round(estimate_duration_s(script, cfg), 1) if script else 0,
     }
+
+
+def delete_video_files(cfg: dict, entry: dict) -> bool:
+    """Файл ролика и промежуточные файлы сцены (озвучка). False — файл занят плеером."""
+    name = Path(entry.get("output", "")).name
+    file = output_dir(cfg, "videos", name)
+    for attempt in range(4):
+        try:
+            if VIDEO_NAME.match(name) and file.is_file():
+                file.unlink()
+            break
+        except PermissionError:   # Windows: файл ещё отдаётся плееру — страница его уже отпустила
+            if attempt == 3:
+                return False
+            time.sleep(0.5)
+    if SCENE_ID.match(scene_id := entry.get("scene_id", "")):
+        shutil.rmtree(output_dir(cfg, "work", scene_id), ignore_errors=True)
+    return True
+
+
+def approved_time(cfg: dict, scene_id: str) -> str | None:
+    """Когда сценарий одобрен (вручную или автоодобрением); у клипов отбора нет — None."""
+    if not SCENE_ID.match(scene_id):
+        return None
+    try:
+        scene = json.loads(scene_path(cfg, scene_id).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    review = scene.get("meta", {}).get("review", {})
+    return review.get("decided_at") if review.get("status") == "approved" else None
+
+
+def seconds_between(start: str | None, end: str | None) -> int | None:
+    try:
+        return round((datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds())
+    except (TypeError, ValueError):   # нет одной из отметок или время без пояса
+        return None
+
+
+def work_seconds(cfg: dict) -> dict[str, float]:
+    """Чистое время обработки каждой сцены — сумма длительностей задач озвучки, субтитров,
+    записи интерфейса и рендера, без ожидания в очереди."""
+    queue = open_queue(cfg)
+    try:
+        jobs = queue.jobs("done", limit=1_000_000, kinds=PROCESSING_KINDS)
+    finally:
+        queue.close()
+    work: dict[str, float] = {}
+    for job in jobs:
+        spent = seconds_between(job.started_at, job.finished_at)
+        if spent is not None and "scene" in job.payload:
+            scene_id = Path(job.payload["scene"]).stem
+            work[scene_id] = work.get(scene_id, 0) + spent
+    return work
 
 
 def worker_running(cfg: dict) -> bool:
@@ -235,14 +291,33 @@ def create_app(cfg: dict) -> FastAPI:
 
     @app.get("/api/videos")
     def videos():
-        path = ROOT / cfg["paths"]["manifest"]
-        entries = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+        entries = manifest.entries(cfg)[-200:]
+        work = work_seconds(cfg)
         result = []
-        for entry in reversed(entries[-200:]):
+        for entry in reversed(entries):
             file = output_dir(cfg, "videos", Path(entry.get("output", "")).name)
+            approved_at = approved_time(cfg, entry.get("scene_id", ""))
             result.append({**entry, "url": f"/media/videos/{file.name}" if file.is_file() else None,
-                           "size_mb": round(file.stat().st_size / 2**20, 1) if file.is_file() else None})
+                           "size_mb": round(file.stat().st_size / 2**20, 1) if file.is_file() else None,
+                           "approved_at": approved_at,
+                           "elapsed_s": seconds_between(approved_at, entry.get("rendered_at")),
+                           "work_s": round(work[entry["scene_id"]]) if entry.get("scene_id") in work else None})
         return result
+
+    @app.delete("/api/videos")
+    def delete_all_videos(ids: list[str] | None = Query(None)):
+        """Удалить готовые ролики — все или ids (те, что видны на странице: новые, отрендеренные
+        после её загрузки, не трогаются). Занятые плеером файлы остаются в списке."""
+        deleted, busy = [], 0
+        for entry in manifest.entries(cfg):
+            if ids is not None and entry.get("scene_id") not in ids:
+                continue
+            if delete_video_files(cfg, entry):
+                deleted.append(entry.get("scene_id"))
+            else:
+                busy += 1
+        manifest.remove(cfg, *deleted)
+        return {"deleted": len(deleted), "busy": busy}
 
     @app.delete("/api/videos/{scene_id}")
     def delete_video(scene_id: str):
@@ -250,20 +325,17 @@ def create_app(cfg: dict) -> FastAPI:
         entry = manifest.find(cfg, scene_id) if SCENE_ID.match(scene_id) else None
         if entry is None:
             raise HTTPException(status_code=404, detail="Нет такого ролика")
-        name = Path(entry.get("output", "")).name
-        file = output_dir(cfg, "videos", name)
-        for attempt in range(4):
-            try:
-                if VIDEO_NAME.match(name) and file.is_file():
-                    file.unlink()
-                break
-            except PermissionError:   # Windows: файл ещё отдаётся плееру — страница его уже отпустила
-                if attempt == 3:
-                    raise HTTPException(status_code=409, detail="Файл занят — остановите видео и попробуйте ещё раз")
-                time.sleep(0.5)
-        shutil.rmtree(output_dir(cfg, "work", scene_id), ignore_errors=True)
+        if not delete_video_files(cfg, entry):
+            raise HTTPException(status_code=409, detail="Файл занят — остановите видео и попробуйте ещё раз")
         manifest.remove(cfg, scene_id)
-        return {"deleted": name}
+        return {"deleted": Path(entry.get("output", "")).name}
+
+    @app.delete("/api/scenes")
+    def delete_scenes_by_status(status: str = "pending", ids: list[str] | None = Query(None)):
+        try:
+            return {"deleted": delete_scenes(cfg, status, ids)}
+        except ReviewError as e:
+            fail(e)
 
     @app.get("/media/videos/{name}")
     def media(name: str):
