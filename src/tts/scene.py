@@ -5,6 +5,7 @@ import copy
 import hashlib
 import logging
 import os
+import re
 from pathlib import Path
 
 import numpy as np
@@ -16,12 +17,14 @@ from core.media import MediaError, run_ffmpeg
 from core.scene import SceneError, output_dir, rel_path, validate_scene, work_dir
 from subtitles.align import Word, load_words, save_words
 from tts.engine import TTSEngine
+from tts.text import normalize_for_tts
 
 log = logging.getLogger(__name__)
 
 # Форматы записей-референсов (читает librosa; m4a — через ffmpeg)
 AUDIO_EXTS = (".wav", ".mp3", ".flac", ".ogg", ".m4a")
 _PARAM_KEYS = ("exaggeration", "cfg_weight", "temperature")
+_SPEAKABLE = re.compile(r"[^\W_]")   # буква или цифра — есть что озвучивать (не одни эмодзи)
 
 
 def voice_source(speaker: str, voices: dict, gender: str | None = None) -> Path | None:
@@ -156,8 +159,12 @@ def synthesize_scene(scene: dict, engine: TTSEngine, preset: str | None = None,
         if voice is not None and line["speaker"] in shifts:
             voice = shifted_reference(voice, shifts[line["speaker"]], shifted_cache)
         line_params = emotion_params(params, tts_cfg["emotions"], emotion)
-        audio, stressed, words = engine.synthesize_with_words(line["text"], line_params, voice,
-                                                              seed=seed + 1000 * i)
+        if _SPEAKABLE.search(normalize_for_tts(line["text"], tts_cfg["language_id"])):
+            audio, stressed, words = engine.synthesize_with_words(line["text"], line_params, voice,
+                                                                  seed=seed + 1000 * i)
+        else:   # сообщение из одних эмодзи: пузырь есть, голоса нет — короткая пауза, чтобы его заметили
+            audio = np.zeros(int(tts_cfg["silent_line_ms"] / 1000 * engine.sr), np.float32)
+            stressed, words = line["text"], []
         sr = engine.sr
         if i:
             gap = np.zeros(int(tts_cfg["pause_between_lines_ms"] / 1000 * sr), np.float32)

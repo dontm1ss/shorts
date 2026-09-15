@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import functools
 import json
+import os
+import threading
+import time
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
@@ -41,9 +44,21 @@ def load_scene(path: Path) -> dict:
 
 
 def save_scene(scene: dict, path: Path) -> None:
+    """Атомарно (временный файл + замена): панель и соседняя линия воркера читают сцены, пока их
+    пишут, — недописанный файл они увидели бы как битый JSON."""
     validate_scene(scene)
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(scene, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(json.dumps(scene, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    for attempt in range(40):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:   # Windows: файл сейчас открыт читателем — через миг освободится
+            if attempt == 39:
+                raise
+            time.sleep(0.05)
 
 
 def is_loop(scene: dict) -> bool:

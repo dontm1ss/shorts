@@ -39,11 +39,15 @@ def _fit(label_in: str, label_out: str, w: int, h: int, fps: int, mode: str = "c
 
 
 def _bg_input(scene: dict, duration_s: float, offset_s: float = 0.0) -> list[str]:
-    """Отрезок фона сцены; offset_s — сдвиг от start_ms (петля: кадры перед стартом)."""
+    """Отрезок фона сцены; offset_s — сдвиг от start_ms (петля: кадры перед стартом). Файл фона заменили
+    более коротким, а старт выбран по старому — старт переносится внутрь файла."""
     bg = scene["background"]
     path = abs_path(bg["source_path"])
+    file_s = media_info(path)["duration_ms"] / 1000
     start_s = bg["start_ms"] / 1000 + offset_s
-    repeat = ["-stream_loop", "-1"] if media_info(path)["duration_ms"] / 1000 < start_s + duration_s else []
+    if file_s > 0 and start_s >= file_s:
+        start_s %= file_s
+    repeat = ["-stream_loop", "-1"] if file_s < start_s + duration_s else []
     return [*repeat, "-ss", f"{start_s:.3f}", "-t", f"{duration_s:.3f}", "-i", str(path)]
 
 

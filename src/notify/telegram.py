@@ -21,8 +21,9 @@ class TelegramError(RuntimeError):
 
 
 def credentials() -> tuple[str | None, str | None]:
+    """Токен бота и чат владельца. Скобки вокруг значения («<токен>», как в шаблоне инструкции) отбрасываются."""
     env = config.read_env_file()
-    value = lambda name: os.environ.get(name) or env.get(name) or None  # noqa: E731
+    value = lambda name: (os.environ.get(name) or env.get(name) or "").strip().strip("<>").strip() or None  # noqa: E731
     return value("TELEGRAM_BOT_TOKEN"), value("TELEGRAM_CHAT_ID")
 
 

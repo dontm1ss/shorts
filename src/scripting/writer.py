@@ -199,7 +199,7 @@ def adjust_drama(drama: dict, current_s: float, client: DeepSeekClient, cfg: dic
     system = prompts.ADJUST_DRAMA_SYSTEM.format(direction=_direction(current_s, target_s),
                                                 target_words=target_words, current_words=current_words,
                                                 style_reminder=prompts.STYLE_REMINDER,
-                                                format_rules=prompts.FORMAT_RULES,
+                                                format_rules=prompts.FORMAT_RULES_DRAMA,
                                                 emotion_rule=prompts.ADJUST_EMOTION_RULE.format(unit="сообщения"),
                                                 loop_rule=prompts.ADJUST_LOOP_RULE if drama.get("loop") else "")
     new = _check_drama(client.chat_json(system, json.dumps(drama, ensure_ascii=False), 0.7))
@@ -331,7 +331,7 @@ def revise_drama(drama: dict, note: str, client: DeepSeekClient, cfg: dict) -> d
     system = prompts.REVISE_DRAMA_SYSTEM.format(
         note=note, current_words=sum(word_count(m["text"]) for m in drama["messages"]),
         max_words=_limits(cfg, _EST_DRAMA_MESSAGES)["max_words"],
-        style_reminder=prompts.STYLE_REMINDER, format_rules=prompts.FORMAT_RULES,
+        style_reminder=prompts.STYLE_REMINDER, format_rules=prompts.FORMAT_RULES_DRAMA,
         emotion_rule=prompts.ADJUST_EMOTION_RULE.format(unit="сообщения"),
         loop_rule=prompts.ADJUST_LOOP_RULE if drama.get("loop") else "")
     new = _check_drama(client.chat_json(system, json.dumps(drama, ensure_ascii=False), 0.7))

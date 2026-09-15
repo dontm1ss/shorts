@@ -258,6 +258,20 @@ def test_scoring_failure_does_not_block_script(dev_cfg, tmp_path, monkeypatch):
     assert jobs.script_drama({}, dev_cfg)["review"] == "pending"
 
 
+def test_emojis_in_dramas_only(dev_cfg):
+    """В переписке эмодзи — как в живом чате (и при переписывании сохраняются), в историях — нет."""
+    client = FakeClient(DRAMA)
+    generate_drama(client, dev_cfg)
+    assert "Эмодзи — как в живой переписке" in client.calls[0][0] and "Без эмодзи" not in client.calls[0][0]
+    client = FakeClient(STORY)
+    invent_story(client, dev_cfg)
+    assert "Без эмодзи." in client.calls[0][0]
+    scene = drama_scene(generate_drama(FakeClient(DRAMA), dev_cfg), dev_cfg)
+    client = FakeClient(DRAMA)
+    rewrite_scene_length(scene, current_s=75.0, client=client, cfg=dev_cfg)
+    assert "(сохраняй их)" in client.calls[0][0] and "Без эмодзи" not in client.calls[0][0]
+
+
 def test_drama_rejects_unknown_speaker(dev_cfg):
     bad = {"messages": [{"speaker": "C", "text": "кто я"}]}
     with pytest.raises(ScriptError, match="отправитель"):

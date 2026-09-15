@@ -189,6 +189,17 @@ def test_loop_drama_seamless_background(cfg, media, tmp_path):
     assert scene_duration_s(scene, cfg) == pytest.approx(4.0 + cfg["compositor"]["tail_ms"] / 1000)
 
 
+def test_background_start_beyond_replaced_file(cfg, media, tmp_path):
+    """Фон заменили файлом короче, а у сцены старт выбран по старому — отрезок берётся внутри файла."""
+    scene = voiced(base_scene(cfg, "reddit_story", tmp_path), media)
+    scene["background"] = {"type": "test_bg", "source_path": str(media["parkour"]), "start_ms": 1_638_480}
+    args = build_plan(scene, cfg, "libx264", FAST_X264).args
+    start = float(args[args.index("-ss") + 1])
+    assert 0 <= start < 20                                          # файл фона — 20 с
+    render_scene(scene, cfg)
+    check_video(scene["output"]["path"], 4.0 + cfg["compositor"]["tail_ms"] / 1000)
+
+
 def test_falls_back_to_libx264(cfg, media, tmp_path):
     cfg["render"]["encoder"] = "h264_does_not_exist"
     cfg["render"]["fallback_encoder_args"] = FAST_X264

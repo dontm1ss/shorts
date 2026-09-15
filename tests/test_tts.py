@@ -179,6 +179,21 @@ def test_scene_timeline(dev_cfg, tmp_path):
     assert result["audio"]["tts_params"] == dev_cfg["tts"]["presets"][dev_cfg["tts"]["scene_presets"]["imessage_drama"]]
 
 
+def test_emoji_only_message_is_silent_pause(dev_cfg, tmp_path):
+    """Сообщение из одних эмодзи: пузырь есть, голоса нет — пауза silent_line_ms, модель не вызывается."""
+    scene = mock_scene("imessage_drama")
+    scene["script"][1]["text"] = "💀💀"
+    scene["script"][2]["text"] = "Скрин уже у всей группы 🙃"
+    engine = FakeEngine(dev_cfg)
+    result = synthesize_scene(scene, engine, out_path=tmp_path / "o.wav")
+    assert [text for text, _ in engine.calls][1].startswith("Скрин") and len(engine.calls) == 3
+    assert "🙃" not in engine.calls[1][0]                                        # эмодзи озвучка не читает
+    silent = result["script"][1]
+    assert silent["duration_ms"] == dev_cfg["tts"]["silent_line_ms"] and silent["stressed_text"] == "💀💀"
+    assert result["script"][2]["timestamp_ms"] == pytest.approx(
+        silent["timestamp_ms"] + silent["duration_ms"] + dev_cfg["tts"]["pause_between_lines_ms"], abs=1)
+
+
 def test_voices_per_role(dev_cfg, tmp_path):
     voice_a = tmp_path / "a.wav"
     sf.write(voice_a, np.zeros(SR), SR)

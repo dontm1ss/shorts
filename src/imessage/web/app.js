@@ -11,6 +11,8 @@
   // Синие пузыри в iOS — градиент по высоте экрана: выше светлее, ниже темнее
   const BLUE_TOP = [99, 176, 252];
   const BLUE_BOTTOM = [47, 118, 245];
+  // Сообщение из 1–3 эмодзи без текста iOS показывает крупно и без пузыря
+  const JUMBO = /^(?:\p{Extended_Pictographic}(?:️|⃣|\p{Emoji_Modifier}|‍\p{Extended_Pictographic})*\s*){1,3}$/u;
 
   let D = null;
   let ms = [];                   // сообщения в порядке на экране; у петли сначала прошлые круги
@@ -35,7 +37,11 @@
   }
 
   function makeRow(m, prev) {
-    const row = el("div", "row " + m.side);
+    const text = m.text.trim();
+    // один эмодзи — крупнее всего, два-три — поменьше (как в iOS)
+    const jumbo = !JUMBO.test(text) ? ""
+      : [...new Intl.Segmenter().segment(text)].filter((s) => s.segment.trim()).length === 1 ? " jumbo one" : " jumbo";
+    const row = el("div", "row " + m.side + jumbo);
     row.style.paddingTop = (!prev ? 2 : prev.side === m.side ? 2 : 10) + "px";
     row.appendChild(el("div", "bubble", m.text));
     return row;
@@ -173,7 +179,7 @@
     // Градиент синих пузырей по их положению на экране
     const top0 = viewportEl.getBoundingClientRect().top;
     for (let i = 0; i <= lastVisible; i++) {
-      if (ms[i].side !== "right") continue;
+      if (ms[i].side !== "right" || rows[i].classList.contains("jumbo")) continue;
       const bubble = rows[i].firstChild;
       const r = bubble.getBoundingClientRect();
       const bottomColor = blueAt(r.bottom - top0);
