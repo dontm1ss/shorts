@@ -143,13 +143,37 @@ class TTSEngine:
         buf.seek(0)
         return buf
 
+    def _free_gpu_cache(self) -> None:
+        """Вернуть драйверу память, которую PyTorch держит про запас. Без этого на 6 ГБ пул растёт
+        с каждым новым голосом-референсом, VRAM кончается, и драйвер Windows молча переносит
+        память в оперативную (Sysmem Fallback) — генерация падает с ~30 до 4–10 токенов/с."""
+        if self.device == "cuda":
+            import torch
+            torch.cuda.empty_cache()
+
+    def _log_vram(self) -> None:
+        if self.device != "cuda":
+            return
+        import torch
+        free, total = torch.cuda.mem_get_info()
+        gb = 2 ** 30
+        log.info("VRAM: torch %.1f ГБ (резерв %.1f), свободно %.1f из %.1f ГБ",
+                 torch.cuda.memory_allocated() / gb, torch.cuda.memory_reserved() / gb, free / gb, total / gb)
+
     def _use_voice(self, voice: Path | None, exaggeration: float) -> None:
         model = self.model
         key = str(voice) if voice else None
         if key not in self._voices:
+            import torch
             log.info("Референс голоса: %s", voice)
-            model.prepare_conditionals(self.reference_audio(voice), exaggeration=exaggeration)
+            # У Chatterbox разбор референса (s3gen.embed_ref) идёт без no_grad: эмбеддинг голоса держал
+            # граф вычислений кодировщика — ~0.3 ГБ VRAM на каждый голос в кэше, после 7–8 эмоций
+            # видеопамять кончалась и озвучка замедлялась в 3–7 раз
+            with torch.no_grad():
+                model.prepare_conditionals(self.reference_audio(voice), exaggeration=exaggeration)
             self._voices[key] = model.conds
+            self._free_gpu_cache()
+            self._log_vram()
         model.conds = self._voices[key]
 
     @staticmethod
@@ -219,6 +243,7 @@ class TTSEngine:
         for attempt in range(attempts):
             self._seed(seed + attempt)
             wav = self._trim(self._raw_generate(text, params, voice))
+            self._free_gpu_cache()   # кэш генерации — до whisper, который тоже на видеокарте
             error, words = 0.0, []
             if self.tts_cfg["verify"]:
                 wav, error, words = self._verify(wav, text)
