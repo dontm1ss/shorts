@@ -188,6 +188,9 @@ class TTSEngine:
 
         if self._whisper is None:
             s = self.cfg["subtitles"]
+            if s["device"] == "cuda":
+                from core.cuda import ensure_cuda_dlls
+                ensure_cuda_dlls()
             self._whisper = WhisperModel(s["model"], device=s["device"], compute_type=s["compute_type"],
                                          cpu_threads=self.cfg["runtime"]["cpu_threads"])
         audio16 = librosa.resample(wav, orig_sr=self.sr, target_sr=16000)

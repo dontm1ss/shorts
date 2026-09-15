@@ -108,6 +108,20 @@ def main() -> int:
         ok = cfg["subtitles"]["compute_type"] in supported
         return ok, f"ctranslate2 {ctranslate2.__version__}, поддерживается: {', '.join(sorted(supported))}"
 
+    if cfg["subtitles"]["device"] == "cuda":
+        @check("whisper распознаёт на cuda без torch (cuBLAS)")
+        def _():
+            # отдельный процесс: здесь torch уже импортирован и подгрузил cuBLAS сам,
+            # а нарезка клипов и субтитры запускают whisper без него
+            code = ("import numpy as np; from core.config import load_config; from core.cuda import ensure_cuda_dlls;"
+                    "from faster_whisper import WhisperModel; s = load_config()['subtitles']; ensure_cuda_dlls();"
+                    "m = WhisperModel(s['model'], device='cuda', compute_type=s['compute_type']);"
+                    "list(m.transcribe(np.zeros(16000, dtype=np.float32), language='ru')[0])")
+            r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", timeout=600)
+            err = (r.stderr.strip().splitlines() or ["?"])[-1]
+            return r.returncode == 0, "распознавание прошло" if r.returncode == 0 else err
+
     @check("ffmpeg в PATH")
     def _():
         path = shutil.which("ffmpeg")

@@ -111,7 +111,11 @@ def transcribe(audio: Path, cfg: dict, language: str | None = None,
     """faster-whisper с пословными таймкодами. language=None — автоопределение."""
     from faster_whisper import WhisperModel
 
+    from core.cuda import ensure_cuda_dlls
+
     s = cfg["subtitles"]
+    if s["device"] == "cuda":
+        ensure_cuda_dlls()
     model = WhisperModel(s["model"], device=s["device"], compute_type=s["compute_type"],
                          cpu_threads=cfg["runtime"]["cpu_threads"])
     segments, _ = model.transcribe(str(audio), language=language, word_timestamps=True,
