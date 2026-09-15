@@ -29,7 +29,8 @@ from pipeline.queue import Job, JobQueue, WorkerLock
 log = logging.getLogger(__name__)
 
 BATCH_KINDS = {"tts_synthesis"}
-LIGHT_KINDS = ("script_story", "script_drama", "script_batch")   # сеть (DeepSeek, форумы), не GPU
+# сеть (DeepSeek, форумы), не GPU
+LIGHT_KINDS = ("script_story", "script_drama", "script_batch", "script_sequel", "publish_meta")
 
 # Windows: задача получает скрытую консоль. Иначе у воркера без консоли (запуск из панели)
 # каждая задача открывала своё окно — закроешь его, и озвучка падает

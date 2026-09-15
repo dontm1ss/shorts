@@ -1,4 +1,4 @@
-"""Подключение уведомлений в Telegram.
+"""Подключение уведомлений в Telegram (проще — кнопкой «Подключить Telegram» в панели).
 
     venv\\Scripts\\python -m notify setup            # после /start боту: найти чат и записать TELEGRAM_CHAT_ID в .env
     venv\\Scripts\\python -m notify setup --chat ID  # если боту писали несколько человек
@@ -10,15 +10,7 @@ import argparse
 import sys
 
 from core import config
-from notify.telegram import TelegramError, call, credentials, notify
-
-
-def save_env(key: str, value: str) -> None:
-    """Задать ключ в .env: прежняя строка с ним заменяется, остальные остаются как были."""
-    path = config.ENV_FILE
-    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-    lines = [line for line in lines if line.split("=", 1)[0].strip() != key]
-    path.write_text("\n".join([*lines, f"{key}={value}"]) + "\n", encoding="utf-8")
+from notify.telegram import TelegramError, call, credentials, notify, save_env
 
 
 def private_chats(updates: list[dict]) -> list[dict]:
@@ -40,11 +32,11 @@ def _who(chat: dict) -> str:
 def cmd_setup(args, cfg) -> int:
     token, _ = credentials()
     if not token:
-        print("В .env нет TELEGRAM_BOT_TOKEN — добавьте строку TELEGRAM_BOT_TOKEN=<токен от @BotFather>")
+        print("В .env нет TELEGRAM_BOT_TOKEN — добавьте строку TELEGRAM_BOT_TOKEN=123456789:ABC… (токен от @BotFather)")
         return 1
     try:
         bot = call(token, "getMe")
-        chats = private_chats(call(token, "getUpdates", timeout=30))
+        chats = private_chats(call(token, "getUpdates", http_timeout=30))
     except TelegramError as e:
         print(f"Telegram не ответил: {e}")
         return 1

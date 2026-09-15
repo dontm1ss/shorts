@@ -340,6 +340,60 @@ def revise_drama(drama: dict, note: str, client: DeepSeekClient, cfg: dict) -> d
     return new
 
 
+def publish_texts(scene: dict, client: DeepSeekClient, cfg: dict) -> dict:
+    """Тексты для публикации готового ролика: подпись TikTok, заголовок и описание Shorts, хэштеги."""
+    loop = scene.get("meta", {}).get("loop")
+    system = prompts.PUBLISH_SYSTEM.format(loop_rule=prompts.PUBLISH_LOOP_RULE if loop else "")
+    data = client.chat_json(system, _script_text(scene), 0.8)
+    text = lambda key, limit: " ".join(str(data.get(key) or "").split())[:limit]  # noqa: E731
+    raw_tags = data.get("hashtags") if isinstance(data.get("hashtags"), list) else []
+    tags = list(dict.fromkeys(t for t in ("#" + re.sub(r"\W", "", str(tag)) for tag in raw_tags) if len(t) > 1))
+    texts = {"tiktok": text("tiktok", 300), "shorts_title": text("shorts_title", 100),
+             "shorts_description": text("shorts_description", 1000), "hashtags": tags[:8]}
+    if not texts["tiktok"] or not texts["shorts_title"]:
+        raise ScriptError(f"DeepSeek вернул тексты для публикации без подписи: {str(data)[:200]}")
+    # хэштеги — прямо в подписи и описании: одно «копировать» на площадку (DeepSeek их туда часто не ставит)
+    if "#" not in texts["tiktok"] and tags:
+        texts["tiktok"] += " " + " ".join(tags[:5])
+    if "#" not in texts["shorts_description"] and tags:
+        texts["shorts_description"] = f"{texts['shorts_description']}\n\n{' '.join(tags)}".strip()
+    return texts
+
+
+def write_sequel(original: dict, client: DeepSeekClient, cfg: dict) -> dict:
+    """Продолжение готового ролика («Часть 2»): те же герои — имена, пол (голоса те же), формат и петля;
+    новое событие и поворот. Новая сцена дальше идёт как любой сценарий: оценка, проверка, озвучка."""
+    meta = original.get("meta", {})
+    part = int(meta.get("part", 1)) + 1
+    loop = bool(meta.get("loop"))
+    chosen = params.drama_params(cfg, loop=loop)
+    variety = prompts.SEQUEL_RULES.format(
+        part=part, twists="; ".join(chosen["twists"]),
+        finale=f"стык петли — {chosen['seam']}" if loop else chosen["finale"])
+    user = prompts.SEQUEL_USER.format(previous=_script_text(original), part=part)
+    if original["type"] == "imessage_drama":
+        system = prompts.DRAMA_SYSTEM.format(
+            **_limits(cfg, _EST_DRAMA_MESSAGES), min_messages=DRAMA_MESSAGES[0], max_messages=DRAMA_MESSAGES[1],
+            variety=variety, emotions=prompts.DRAMA_EMOTION_RULES,
+            loop=f"\n{prompts.DRAMA_LOOP_RULES}\n" if loop else "", loop_field=prompts.DRAMA_LOOP_FIELD if loop else "")
+        raw = client.chat_json(system, user)
+        drama = _check_drama(raw)
+        drama["contacts"] = meta.get("contacts") or drama["contacts"]   # имена героев — как в прошлой части
+        if loop:
+            idea = raw.get("loop")
+            drama.update(loop=True, loop_idea=" ".join(idea.split())[:300] if isinstance(idea, str) else "")
+        scene = drama_scene(drama, cfg, meta.get("topic"))
+    else:
+        system = prompts.STORY_SYSTEM.format(**_limits(cfg, _EST_STORY_PARTS), emotions=prompts.STORY_EMOTION_RULES,
+                                             variety=variety)
+        scene = story_scene(_check_story(client.chat_json(system, user)), cfg, {"source": "deepseek"},
+                            meta.get("topic"))
+    base = re.sub(r"\s*[—-]\s*часть\s*\d+\s*$", "", meta.get("title") or scene["meta"]["title"], flags=re.IGNORECASE)
+    scene["meta"].update(title=f"{base} — часть {part}"[:80], part=part, sequel_of=original["scene_id"],
+                         genders={**scene["meta"].get("genders", {}), **meta.get("genders", {})})
+    return validate_scene(scene)
+
+
 def revise_scene(scene: dict, note: str, client: DeepSeekClient, cfg: dict) -> dict:
     """Переписать сценарий по замечаниям — редактора (оценка ниже порога) или владельца (панель).
     Сцена та же: scene_id, отбор, оформление, пол героев и петля сохраняются; прежняя оценка снимается."""

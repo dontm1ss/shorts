@@ -66,6 +66,17 @@ def _bg_stream(scene: dict, cfg: dict, inputs: list[str], index: int, duration: 
             f":offset={duration - fade_s:.3f}[{label}]"]
 
 
+def _rate_cap(cfg: dict, duration: float) -> list[str]:
+    """Потолок битрейта видео, чтобы файл уложился в render.max_size_mb (бот Telegram — до 50 МБ);
+    площадки всё равно пережимают. Качество задаёт энкодер, потолок срезает только пики."""
+    max_mb = cfg["render"].get("max_size_mb", 0)
+    if not max_mb or duration <= 0:
+        return []
+    audio_bps = int(str(cfg["video"]["audio_bitrate"]).rstrip("kK")) * 1000
+    kbps = int((max_mb * 8 * 2 ** 20 * 0.96 / duration - audio_bps) / 1000)   # 4% — контейнер и запас
+    return ["-maxrate", f"{kbps}k", "-bufsize", f"{kbps}k"]
+
+
 def tail_ms(scene: dict, cfg: dict) -> int:
     """Хвост ролика после конца озвучки. У петли вместо хвоста — обычная пауза между репликами:
     повтор начинается так же, как следующая реплика, и стык не слышен."""
@@ -156,7 +167,7 @@ def build_plan(scene: dict, cfg: dict, encoder: str, encoder_args: list[str],
                  "aformat=sample_rates=48000:channel_layouts=stereo,apad[aout]")
 
     args = [*inputs, "-filter_complex", ";".join(graph), "-map", "[vout]", "-map", "[aout]",
-            "-c:v", encoder, *encoder_args, "-pix_fmt", "yuv420p", "-r", str(fps),
+            "-c:v", encoder, *encoder_args, *_rate_cap(cfg, duration), "-pix_fmt", "yuv420p", "-r", str(fps),
             "-c:a", "aac", "-b:a", cfg["video"]["audio_bitrate"], "-ar", "48000",
             "-t", f"{duration:.3f}", "-movflags", "+faststart", str(output)]
     return RenderPlan(args=args, cwd=subs.parent if subs else None, duration_s=duration, output=output)

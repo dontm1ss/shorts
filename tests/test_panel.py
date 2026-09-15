@@ -340,6 +340,160 @@ def test_revise_error_keeps_script(cfg, monkeypatch):
     assert [l["text"] for l in card["script"]] == [l["text"] for l in scene["script"]]   # сценарий прежний
 
 
+def test_videos_publish_texts_and_sequel(cfg):
+    from pipeline.publish import save_publish
+    client = TestClient(panel.app.create_app(cfg))
+    x = {"X-Panel": "1"}
+    scene = make_scene(cfg, kind="imessage_drama", status="approved")
+    sid = scene["scene_id"]
+    manifest.record(cfg, scene, {"output": "output/videos/v.mp4", "duration_s": 55.0})
+    clip = {"scene_id": str(uuid.uuid4()), "type": "video_clip", "created_at": "2026-09-15T10:00:00Z"}
+    manifest.record(cfg, clip, {"output": "output/videos/c.mp4", "duration_s": 30.0})
+    videos = {v["scene_id"]: v for v in client.get("/api/videos").json()}
+    assert videos[sid]["writable"] and videos[sid]["publish"] is None and videos[sid]["part"] == 1
+    assert not videos[clip["scene_id"]]["writable"]                               # у клипа сценария нет
+
+    first = client.post(f"/api/videos/{sid}/publish", headers=x).json()
+    again = client.post(f"/api/videos/{sid}/publish", headers=x).json()
+    assert first["new"] and not again["new"] and first["job"] == again["job"]     # вторую такую же не ставим
+    assert client.post(f"/api/videos/{clip['scene_id']}/publish", headers=x).status_code == 400
+    assert client.post("/api/videos/publish-missing", headers=x).json()["queued"] == 0   # уже заказаны
+    save_publish(cfg, sid, {"tiktok": "Он думал, это шутка #драма", "shorts_title": "Скрин #shorts",
+                            "shorts_description": "Чем кончится?", "hashtags": ["#драма"]})
+    assert client.get("/api/videos").json()[1]["publish"]["tiktok"] == "Он думал, это шутка #драма"
+
+    r = client.post(f"/api/videos/{sid}/sequel", headers=x).json()
+    queue = open_queue(cfg)
+    job = queue.get(r["job"])
+    queue.close()
+    assert r["new"] and job.kind == "script_sequel" and job.payload["scene"].endswith(f"{sid}.json")
+    summary = client.get("/api/summary").json()
+    assert summary["videos"] == 2 and summary["telegram"] == {"configured": False, "connected": False,
+                                                              "bot": None, "pair_link": None}
+
+
+def test_approve_orders_publish_texts(cfg):
+    scene = make_scene(cfg)
+    queue = open_queue(cfg)
+    approve(cfg, scene["scene_id"], queue)
+    texts = queue.jobs("pending", kinds=("publish_meta",))
+    queue.close()
+    assert len(texts) == 1 and texts[0].payload["scene"].endswith(f"{scene['scene_id']}.json")
+
+
+class TgResp:
+    def __init__(self, data):
+        self.data, self.status_code = data, 200
+
+    def json(self):
+        return self.data
+
+
+class FakeTelegram:
+    """Bot API без сети: updates — что «пришло» боту, calls — что бот отправил [(метод, параметры, файлы)]."""
+
+    def __init__(self):
+        self.calls, self.updates, self.message_id = [], [], 100
+
+    def __call__(self, url, json=None, data=None, files=None, timeout=None):
+        method = url.rsplit("/", 1)[-1]
+        self.calls.append((method, json if json is not None else data, files))
+        if method == "getMe":
+            result = {"username": "privatetiktokbot"}
+        elif method == "getUpdates":
+            result, self.updates = self.updates, []
+        elif method in ("sendMessage", "sendVideo"):
+            self.message_id += 1
+            result = {"message_id": self.message_id}
+        else:
+            result = True
+        return TgResp({"ok": True, "result": result})
+
+    def sent(self, method):
+        return [params for m, params, _ in self.calls if m == method]
+
+
+def tg_message(update_id, text, chat=42, reply_to=None):
+    msg = {"message_id": update_id, "chat": {"id": chat, "type": "private"}, "text": text}
+    if reply_to:
+        msg["reply_to_message"] = {"message_id": reply_to}
+    return {"update_id": update_id, "message": msg}
+
+
+def tg_button(update_id, data, chat=42, message_id=1):
+    return {"update_id": update_id, "callback_query": {"id": f"q{update_id}", "from": {"id": chat}, "data": data,
+                                                       "message": {"message_id": message_id, "chat": {"id": chat}}}}
+
+
+def test_telegram_bot(cfg, monkeypatch):
+    """Бот: подключение по коду из панели, сценарии с кнопками, правка ответом, ролик с текстами, чужие — мимо."""
+    import json
+
+    import requests
+
+    import core.config
+    from panel.telegram_bot import FarmBot
+    from pipeline.publish import save_publish
+    api = FakeTelegram()
+    monkeypatch.setattr(requests, "post", api)
+    core.config.ENV_FILE.write_text("TELEGRAM_BOT_TOKEN=<123456:TEST>\n", encoding="utf-8")   # в скобках — тоже
+    old = make_scene(cfg, status="approved")
+    manifest.record(cfg, old, {"output": "output/videos/old.mp4", "duration_s": 50.0})
+
+    bot = FarmBot(cfg)
+    bot.tick(poll_s=0)
+    assert bot.info()["pair_link"] == f"https://t.me/privatetiktokbot?start={bot.pair_code}"
+    api.updates = [tg_message(1, "/start 00000000", chat=666), tg_message(2, f"/start {bot.pair_code}")]
+    bot.tick(poll_s=0)
+    assert "TELEGRAM_CHAT_ID=42" in core.config.ENV_FILE.read_text(encoding="utf-8")
+    assert [m["chat_id"] for m in api.sent("sendMessage")] == ["666", "42"]      # чужому — «подключается в панели»
+    assert bot.info() == {"configured": True, "connected": True, "bot": "privatetiktokbot", "pair_link": None}
+
+    scene = make_scene(cfg, kind="imessage_drama")
+    sid = scene["scene_id"]
+    bot.tick(poll_s=0)
+    card = api.sent("sendMessage")[-1]
+    assert "Лена:</b> Ты правда думала" in card["text"] and card["parse_mode"] == "HTML"
+    assert [b["callback_data"] for row in card["reply_markup"]["inline_keyboard"] for b in row] == \
+        [f"ap:{sid}", f"rj:{sid}", f"rw:{sid}"]
+    bot.tick(poll_s=0)
+    assert api.sent("sendMessage")[-1] is card                                    # второй раз не шлёт
+
+    revised = []
+    monkeypatch.setattr(panel.app, "revise_in_background", lambda cfg, sid, note: revised.append((sid, note)))
+    api.updates = [tg_button(3, f"rw:{sid}")]
+    bot.tick(poll_s=0)
+    ask = api.message_id
+    api.updates = [tg_message(4, "концовку жёстче", reply_to=ask), tg_message(5, "/status", chat=666)]
+    bot.tick(poll_s=0)
+    assert revised == [(sid, "концовку жёстче")] and load_scene(scene_path(cfg, sid))["meta"]["review"]["revising"]
+    assert all(m["chat_id"] != "666" for m in api.sent("sendMessage")[2:])       # чужой /status — без ответа
+    scene = load_scene(scene_path(cfg, sid))
+    del scene["meta"]["review"]["revising"]
+    save_scene(scene, scene_path(cfg, sid))
+
+    api.updates = [tg_button(6, f"ap:{sid}", message_id=777)]
+    bot.tick(poll_s=0)
+    assert load_scene(scene_path(cfg, sid))["meta"]["review"]["status"] == "approved"
+    assert api.sent("answerCallbackQuery")[-1]["text"].startswith("Одобрен")
+    assert api.sent("editMessageReplyMarkup")[-1]["reply_markup"]["inline_keyboard"][0][0]["text"] == "✅ Одобрен"
+
+    videos = scene_path(cfg, sid).parents[1] / "videos"
+    videos.mkdir(parents=True, exist_ok=True)
+    (videos / "new.mp4").write_bytes(b"\x00" * 1000)
+    manifest.record(cfg, load_scene(scene_path(cfg, sid)), {"output": "output/videos/new.mp4", "duration_s": 55.0})
+    bot.tick(poll_s=0)
+    assert api.sent("sendVideo") == []                                            # ждёт тексты для публикации
+    save_publish(cfg, sid, {"tiktok": "Он думал, это шутка #драма", "shorts_title": "Скрин #shorts",
+                            "shorts_description": "Чем кончится?", "hashtags": ["#драма"]})
+    bot.tick(poll_s=0)
+    method, params, files = [c for c in api.calls if c[0] == "sendVideo"][0]
+    assert files["video"][0] == "new.mp4" and params["chat_id"] == "42" and "Скрин" in params["caption"]
+    assert json.loads(params["reply_markup"])["inline_keyboard"][0][0] == {"text": "📺 Часть 2", "callback_data": f"sq:{sid}"}
+    assert "<code>Он думал, это шутка #драма</code>" in api.sent("sendMessage")[-1]["text"]
+    assert len(api.sent("sendVideo")) == 1                                        # старый ролик не прислан
+
+
 def test_api_generate_loop(cfg):
     """Галочка «петля» у переписок: задачи сценариев с loop, у историй петли нет."""
     client = TestClient(panel.app.create_app(cfg))

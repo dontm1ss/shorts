@@ -272,6 +272,80 @@ def test_emojis_in_dramas_only(dev_cfg):
     assert "(сохраняй их)" in client.calls[0][0] and "Без эмодзи" not in client.calls[0][0]
 
 
+PUBLISH = {"tiktok": "  Он думал, это шутка… #переписка #драма ", "shorts_title": "Скрин, который всё испортил 😬 #shorts",
+           "shorts_description": "Чем закончится? Пиши в комменты. #переписка",
+           "hashtags": ["#переписка", "драма", "# fyp", "#переписка", ""]}
+
+
+def test_publish_texts(dev_cfg):
+    from scripting import publish_texts
+    scene = drama_scene(generate_drama(FakeClient(LOOP_DRAMA), dev_cfg, loop=True), dev_cfg)
+    client = FakeClient(PUBLISH)
+    texts = publish_texts(scene, client, dev_cfg)
+    assert texts["tiktok"] == "Он думал, это шутка… #переписка #драма"
+    assert texts["hashtags"] == ["#переписка", "#драма", "#fyp"]                  # с #, без пробелов и повторов
+    system, user = client.calls[0]
+    assert "не раскрывай концовку" in system and "без мата" in system and "не упоминай повтор" in system
+    assert "Лена: Ты правда думала" in user
+    with pytest.raises(ScriptError, match="без подписи"):
+        publish_texts(scene, FakeClient({"tiktok": " ", "shorts_title": "x"}), dev_cfg)
+    bare = publish_texts(scene, FakeClient({**PUBLISH, "tiktok": "Он думал, это шутка", "shorts_description": "Чем кончится?"}),
+                         dev_cfg)                                               # хэштеги — прямо в подпись и описание
+    assert bare["tiktok"] == "Он думал, это шутка #переписка #драма #fyp"
+    assert bare["shorts_description"] == "Чем кончится?\n\n#переписка #драма #fyp"
+
+
+def test_write_sequel(dev_cfg):
+    from scripting import write_sequel
+    original = drama_scene(generate_drama(FakeClient(DRAMA), dev_cfg), dev_cfg)
+    part2 = {**DRAMA, "title": "Новое", "contacts": {"A": "Катя", "B": "Я"}, "genders": {"A": "male"}}
+    client = FakeClient(part2)
+    scene = write_sequel(original, client, dev_cfg)
+    system, user = client.calls[0]
+    assert "ПРОДОЛЖЕНИЕ — это часть 2" in system and "Повороты этой части:" in system and "ПЕТЛЯ" not in system
+    assert user.startswith("Переписка «Скрин»") and "Лена: Ты правда думала" in user and user.endswith("Напиши часть 2.")
+    assert scene_errors(scene) == [] and scene["meta"]["title"] == "Скрин — часть 2"
+    assert scene["meta"]["part"] == 2 and scene["meta"]["sequel_of"] == original["scene_id"]
+    assert scene["meta"]["contacts"]["A"] == "Лена"                                # те же герои и голоса
+    assert scene["meta"]["genders"] == original["meta"]["genders"]
+    assert write_sequel(scene, FakeClient(part2), dev_cfg)["meta"]["title"] == "Скрин — часть 3"
+
+    loop = drama_scene(generate_drama(FakeClient(LOOP_DRAMA), dev_cfg, loop=True), dev_cfg)
+    client = FakeClient(LOOP_DRAMA)
+    assert write_sequel(loop, client, dev_cfg)["meta"]["loop"] is True
+    assert "ПЕТЛЯ" in client.calls[0][0] and "Финал: стык петли" in client.calls[0][0]
+
+    client = FakeClient(STORY)
+    story = write_sequel(story_scene(STORY, dev_cfg), client, dev_cfg)
+    assert story["type"] == "reddit_story" and story["meta"]["genders"] == {"narrator": "male"}
+    assert client.calls[0][1].startswith("История «Табличка»")
+
+
+def test_publish_and_sequel_jobs(dev_cfg, tmp_path, monkeypatch):
+    import scripting
+    from core.scene import load_scene, save_scene, scene_path
+    from pipeline import jobs
+    from pipeline.publish import load_publish
+    dev_cfg["paths"]["output"] = str(tmp_path / "out")
+    scene = drama_scene(generate_drama(FakeClient(DRAMA), dev_cfg), dev_cfg)
+    path = scene_path(dev_cfg, scene["scene_id"])
+    save_scene(scene, path)
+    monkeypatch.setattr(scripting, "DeepSeekClient", lambda cfg: FakeClient(PUBLISH))
+    jobs.publish_meta({"scene": str(path)}, dev_cfg)
+    assert load_publish(dev_cfg, scene["scene_id"])["shorts_title"].endswith("#shorts")
+
+    monkeypatch.setattr(scripting, "DeepSeekClient", lambda cfg: FakeClient(DRAMA, {**SCORE, "total": 7}))
+    monkeypatch.setattr(jobs, "_prefit", lambda scene, cfg, client: scene)
+    result = jobs.script_sequel({"scene": str(path)}, dev_cfg)
+    sequel = load_scene(tmp_path / "out" / "scenes" / result["scene"].rsplit("/", 1)[-1])
+    assert result["review"] == "pending" and sequel["meta"]["part"] == 2 and sequel["meta"]["score"]["total"] == 7
+
+    dev_cfg["review"]["enabled"] = False                                          # сразу в работу — и тексты тоже
+    monkeypatch.setattr(scripting, "DeepSeekClient", lambda cfg: FakeClient(DRAMA, {**SCORE, "total": 7}))
+    chains = jobs.script_drama({}, dev_cfg)["next"]
+    assert [c[0]["kind"] for c in chains] == ["tts_synthesis", "publish_meta"]
+
+
 def test_drama_rejects_unknown_speaker(dev_cfg):
     bad = {"messages": [{"speaker": "C", "text": "кто я"}]}
     with pytest.raises(ScriptError, match="отправитель"):

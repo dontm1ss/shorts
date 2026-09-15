@@ -42,6 +42,11 @@ def processing_chain(scene: dict, cfg: dict, path: Path) -> list[dict]:
     return chain
 
 
+def publish_job(path: Path) -> dict:
+    """Тексты для публикации — лёгкой линией параллельно озвучке: к готовому ролику они уже есть."""
+    return {"kind": "publish_meta", "payload": {"scene": rel_path(path)}}
+
+
 def mark_pending(scene: dict) -> dict:
     scene.setdefault("meta", {})["review"] = {"status": "pending", "created_at": _now()}
     return scene
@@ -161,6 +166,7 @@ def approve(cfg: dict, scene_id: str, queue) -> list[int]:
     scene["meta"]["review"].update(status="approved", decided_at=_now())
     save_scene(scene, path)
     ids = queue.enqueue_chain(processing_chain(scene, cfg, path))
+    queue.enqueue_chain([publish_job(path)])
     log.info("Одобрен «%s» → задачи %s", scene["meta"].get("title", scene_id), ids)
     return ids
 

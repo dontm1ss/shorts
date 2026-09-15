@@ -27,9 +27,11 @@ from pydantic import BaseModel
 
 from core.config import ROOT
 from core.emotions import DEFAULT as DEFAULT_EMOTION, EMOTIONS
-from core.scene import output_dir, scene_path
+from core.scene import output_dir, rel_path, scene_path
 from notify import notify
+from panel.telegram_bot import FarmBot
 from pipeline import manifest
+from pipeline.publish import load_publish
 from pipeline.queue import WorkerLock
 from pipeline.review import (ReviewError, approve, auto_approve, delete_scenes, finish_revision, list_scenes,
                              reject, restore, revising, set_auto_approve, set_texts, start_revision)
@@ -109,15 +111,9 @@ def delete_video_files(cfg: dict, entry: dict) -> bool:
     return True
 
 
-def approved_time(cfg: dict, scene_id: str) -> str | None:
+def approved_time(meta: dict) -> str | None:
     """Когда сценарий одобрен (вручную или автоодобрением); у клипов отбора нет — None."""
-    if not SCENE_ID.match(scene_id):
-        return None
-    try:
-        scene = json.loads(scene_path(cfg, scene_id).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    review = scene.get("meta", {}).get("review", {})
+    review = meta.get("review", {})
     return review.get("decided_at") if review.get("status") == "approved" else None
 
 
@@ -206,6 +202,45 @@ def ensure_worker(cfg: dict) -> int:
     return waiting
 
 
+# --- действия панели и бота Telegram ------------------------------------------------------
+
+def approve_and_start(cfg: dict, scene_id: str) -> tuple[list[int], bool]:
+    """Одобрить сценарий: в очередь на озвучку и рендер, обработчик — запустить, если стоит."""
+    queue = open_queue(cfg)
+    try:
+        ids = approve(cfg, scene_id, queue)
+    finally:
+        queue.close()
+    return ids, start_worker(cfg)
+
+
+def enqueue_once(cfg: dict, kind: str, scene_id: str) -> tuple[int, bool]:
+    """Задача по сценарию готового ролика — продолжение (script_sequel) или тексты для публикации
+    (publish_meta). Такая же ещё ждёт или идёт — вторая не ставится. Возвращает (id задачи, новая ли)."""
+    path = scene_path(cfg, scene_id) if SCENE_ID.match(scene_id) else None
+    if path is None or not path.is_file():
+        raise ReviewError("Нет такого сценария")
+    if not json.loads(path.read_text(encoding="utf-8")).get("script"):
+        raise ReviewError("У клипа нет сценария")
+    scene = rel_path(path)
+    queue = open_queue(cfg)
+    try:
+        for status in ("pending", "running"):
+            for job in queue.jobs(status, limit=100_000, kinds=(kind,)):
+                if job.payload.get("scene") == scene:
+                    return job.id, False
+        return queue.enqueue(kind, {"scene": scene}), True
+    finally:
+        queue.close()
+
+
+def scene_meta(cfg: dict, scene_id: str) -> dict:
+    try:
+        return json.loads(scene_path(cfg, scene_id).read_text(encoding="utf-8")).get("meta", {})
+    except (OSError, ValueError):
+        return {}
+
+
 def _watchdog(cfg: dict, stop: threading.Event) -> None:
     """Сторож: обработчик не должен вставать молча — проверка сразу и раз в panel.watchdog_s."""
     while True:
@@ -220,11 +255,15 @@ def _watchdog(cfg: dict, stop: threading.Event) -> None:
 
 
 def create_app(cfg: dict) -> FastAPI:
+    bot = FarmBot(cfg)
+
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
         stop = threading.Event()
         if cfg["panel"]["watchdog_s"]:
             threading.Thread(target=_watchdog, args=(cfg, stop), name="watchdog", daemon=True).start()
+        if cfg["notify"]["enabled"] and cfg["notify"]["bot"]:
+            threading.Thread(target=bot.run, args=(stop,), name="telegram", daemon=True).start()
         yield
         stop.set()
 
@@ -286,6 +325,8 @@ def create_app(cfg: dict) -> FastAPI:
                        "min_s": s["min_duration_s"], "max_s": s["max_duration_s"]},
             "emotions": [{"id": key, "label": label} for key, (label, _) in EMOTIONS.items()],
             "scoring": {"enabled": cfg["scoring"]["enabled"], "min_score": cfg["scoring"]["min_score"]},
+            "telegram": bot.info(),
+            "videos": len(manifest.entries(cfg)),
         }
 
     @app.get("/api/scenes")
@@ -325,14 +366,10 @@ def create_app(cfg: dict) -> FastAPI:
         try:
             if body is not None:
                 set_texts(cfg, scene_id, body.texts, body.emotions)
-            queue = open_queue(cfg)
-            try:
-                jobs = approve(cfg, scene_id, queue)
-            finally:
-                queue.close()
+            jobs, started = approve_and_start(cfg, scene_id)
         except ReviewError as e:
             fail(e)
-        return {"jobs": jobs, "worker_started": start_worker(cfg)}
+        return {"jobs": jobs, "worker_started": started}
 
     @app.post("/api/scenes/{scene_id}/reject")
     def reject_scene(scene_id: str):
@@ -394,13 +431,51 @@ def create_app(cfg: dict) -> FastAPI:
         result = []
         for entry in reversed(entries):
             file = output_dir(cfg, "videos", Path(entry.get("output", "")).name)
-            approved_at = approved_time(cfg, entry.get("scene_id", ""))
+            scene_id = entry.get("scene_id", "")
+            meta = scene_meta(cfg, scene_id) if SCENE_ID.match(scene_id) else {}
+            approved_at = approved_time(meta)
             result.append({**entry, "url": f"/media/videos/{file.name}" if file.is_file() else None,
                            "size_mb": round(file.stat().st_size / 2**20, 1) if file.is_file() else None,
                            "approved_at": approved_at,
                            "elapsed_s": seconds_between(approved_at, entry.get("rendered_at")),
-                           "work_s": round(work[entry["scene_id"]]) if entry.get("scene_id") in work else None})
+                           "work_s": round(work[scene_id]) if scene_id in work else None,
+                           # тексты для публикации и продолжение — у роликов со сценарием (не у клипов)
+                           "writable": entry.get("type") in ("reddit_story", "imessage_drama"),
+                           "part": int(meta.get("part", 1)),
+                           "publish": load_publish(cfg, scene_id) if SCENE_ID.match(scene_id) else None})
         return result
+
+    @app.post("/api/videos/{scene_id}/publish")
+    def publish(scene_id: str):
+        """Тексты для публикации ролика (подпись TikTok, заголовок и описание Shorts) — задачей лёгкой линии."""
+        try:
+            job, new = enqueue_once(cfg, "publish_meta", scene_id)
+        except ReviewError as e:
+            fail(e)
+        return {"job": job, "new": new, "worker_started": start_worker(cfg)}
+
+    @app.post("/api/videos/publish-missing")
+    def publish_missing():
+        """Тексты для публикации всем готовым роликам со сценарием, у которых их ещё нет."""
+        new = 0
+        for entry in manifest.entries(cfg):
+            scene_id = entry.get("scene_id", "")
+            if (entry.get("type") in ("reddit_story", "imessage_drama") and SCENE_ID.match(scene_id)
+                    and load_publish(cfg, scene_id) is None):
+                try:
+                    new += enqueue_once(cfg, "publish_meta", scene_id)[1]
+                except ReviewError:   # сцену удалили руками — ролик остался
+                    continue
+        return {"queued": new, "worker_started": start_worker(cfg) if new else False}
+
+    @app.post("/api/videos/{scene_id}/sequel")
+    def sequel(scene_id: str):
+        """Продолжение ролика («Часть 2»): DeepSeek пишет следующую часть с теми же героями — на проверку."""
+        try:
+            job, new = enqueue_once(cfg, "script_sequel", scene_id)
+        except ReviewError as e:
+            fail(e)
+        return {"job": job, "new": new, "worker_started": start_worker(cfg)}
 
     @app.delete("/api/videos")
     def delete_all_videos(ids: list[str] | None = Query(None)):

@@ -200,6 +200,18 @@ def test_background_start_beyond_replaced_file(cfg, media, tmp_path):
     check_video(scene["output"]["path"], 4.0 + cfg["compositor"]["tail_ms"] / 1000)
 
 
+def test_rate_cap_fits_telegram(cfg):
+    """Потолок битрейта от длительности: 48 МБ на ролик вместе со звуком (бот Telegram — до 50 МБ)."""
+    from compositor.layouts import _rate_cap
+    args = _rate_cap(cfg, 71.2)
+    kbps = int(args[args.index("-maxrate") + 1].rstrip("k"))
+    assert 5000 < kbps < 5500 and args[args.index("-bufsize") + 1] == f"{kbps}k"
+    size_mb = (kbps * 1000 + 192_000) * 71.2 / 8 / 2 ** 20
+    assert size_mb < 48
+    cfg["render"]["max_size_mb"] = 0
+    assert _rate_cap(cfg, 71.2) == []
+
+
 def test_falls_back_to_libx264(cfg, media, tmp_path):
     cfg["render"]["encoder"] = "h264_does_not_exist"
     cfg["render"]["fallback_encoder_args"] = FAST_X264

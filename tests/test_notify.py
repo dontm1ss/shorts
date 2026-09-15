@@ -98,6 +98,7 @@ def test_digest_batches_failures(dev_cfg, tmp_path):
 
 
 def test_digest_ready_when_queue_empties(dev_cfg, tmp_path):
+    dev_cfg["notify"]["bot"] = False                                   # без бота панели — сводка от обработчика
     scene = tmp_path / "s.json"
     scene.write_text(json.dumps({"type": "imessage_drama", "meta": {"title": "Четверг, баня", "loop": True}}),
                      encoding="utf-8")
@@ -115,6 +116,11 @@ def test_digest_ready_when_queue_empties(dev_cfg, tmp_path):
     digest.job_done(job("video_render", scene), {"duration_s": 50})
     now[0] = dev_cfg["notify"]["ready_digest_min"] * 60
     digest.tick(idle=False)                                            # очередь не пустеет — раз в час
+    assert len(sent) == 2
+    dev_cfg["notify"]["bot"] = True                                    # бот панели шлёт ролики сам, по одному
+    digest.job_done(job("video_render", scene), {"duration_s": 50})
+    digest.job_done(job("script_story"), {"review": "pending"})
+    digest.flush()
     assert len(sent) == 2
 
 

@@ -15,6 +15,9 @@
   let scoring = null;  // {enabled, min_score} — оценка DeepSeek-редактора
   let autoApprove = false;
   let lastSummary = "";
+  let lastVideos = null;               // сколько готовых роликов — «Готовые» перерисовываются, только когда их больше
+  let refreshVideosOnChange = false;   // заказаны тексты для публикации — показать, когда задача выполнится
+  let videoQuery = "";                 // поиск по названию на вкладке «Готовые»
 
   const $ = (sel) => document.querySelector(sel);
   const content = $("#content");
@@ -151,14 +154,23 @@
       const auto = $("#auto-approve");
       if (!auto.disabled) auto.checked = s.auto_approve;   // не перебивать переключение, пока оно сохраняется
       autoApprove = s.auto_approve;
+      const tg = $("#tg-connect");   // Telegram: токен есть, а чат не подключён — ссылка на бота с кодом
+      tg.hidden = !(s.telegram && s.telegram.pair_link);
+      if (!tg.hidden) tg.href = s.telegram.pair_link;
       const key = JSON.stringify([s.review, s.queue]);
       if (tab === "queue" && lastSummary !== "") renderQueue();   // время «Длилась» у идущей задачи тикает
       if (key !== lastSummary) {
         const first = lastSummary === "";
         lastSummary = key;
-        if (!first && tab !== "pending") render();   // на вкладке проверки не сбиваем правки
-        if (!first && tab === "pending" && !document.querySelector(".card.dirty")) render();
+        if (!first && (tab === "queue" || tab === "rejected")) render();
+        if (!first && tab === "pending" && !document.querySelector(".card.dirty")) render();   // правки не сбиваем
+        // «Готовые» — только когда появился ролик или готовы заказанные тексты, и не посреди просмотра
+        if (!first && tab === "videos" && (s.videos !== lastVideos || refreshVideosOnChange) && !videosBusy()) {
+          refreshVideosOnChange = false;
+          render();
+        }
       }
+      lastVideos = s.videos;
     } catch (e) {
       $("#worker-state").textContent = "нет связи с сервером";
     }
@@ -419,6 +431,29 @@
 
   // --- готовые и очередь ----------------------------------------------------------
 
+  const norm = (s) => (s || "").toLowerCase().replace(/ё/g, "е");
+
+  // Вкладку «Готовые» не перерисовывать, пока с ней работают: смотрят ролик, ищут, читают тексты
+  function videosBusy() {
+    return [...content.querySelectorAll("video")].some((v) => !v.paused)
+      || document.activeElement === content.querySelector(".search")
+      || !!content.querySelector("details.publish[open]");
+  }
+
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (e) {   // без HTTPS буфер обмена недоступен — через выделение
+      const ta = el("textarea");
+      ta.value = text;
+      document.body.append(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+    }
+    toast("Скопировано");
+  }
+
   async function renderVideos() {
     const videos = await api("/api/videos");
     $("#n-videos").textContent = videos.length || "";
@@ -426,9 +461,33 @@
       content.replaceChildren(el("div", { class: "empty", text: "Готовых роликов пока нет." }));
       return;
     }
+    const cards = videos.map(videoCard);
+    const label = el("span", { class: "toolbar-label" });
+    // поиск по названию — только среди загруженных карточек, без запроса к серверу
+    const search = el("input", { type: "search", class: "search", placeholder: "поиск по названию",
+      "aria-label": "поиск роликов по названию", oninput: () => { videoQuery = search.value; applySearch(); } });
+    search.value = videoQuery;
+    const applySearch = () => {
+      const q = norm(videoQuery.trim());
+      let shown = 0;
+      cards.forEach((card, i) => {
+        card.hidden = !!q && !norm(videos[i].title).includes(q);
+        if (!card.hidden) shown++;
+      });
+      label.textContent = q ? `найдено ${shown} из ${videos.length}` : videosLabel(videos.length);
+    };
+    const missing = videos.filter((v) => v.writable && !v.publish).length;
+    const publishAll = missing ? el("button", { class: "ghost", text: `📝 Тексты для всех (${missing})`, onclick: async () => {
+      publishAll.disabled = true;
+      try {
+        const r = await api("/api/videos/publish-missing", { method: "POST" });
+        toast(`Пишу тексты для публикации: ${r.queued} — появятся здесь по мере готовности`);
+        refreshVideosOnChange = true;
+      } catch (e) { toast(e.message, true); publishAll.disabled = false; }
+    } }) : null;
     const deleteAll = el("button", { class: "danger", text: "Удалить все", onclick: async () => {
-      const cards = [...content.querySelectorAll(".video")];
-      if (!cards.length || !confirm(`Удалить все ролики (${cards.length})? Файлы удалятся насовсем.`)) return;
+      const cards = [...content.querySelectorAll(".video:not([hidden])")];   // найденные поиском — только их
+      if (!cards.length || !confirm(`Удалить ролики (${cards.length})? Файлы удалятся насовсем.`)) return;
       deleteAll.disabled = true;
       for (const player of content.querySelectorAll("video")) {   // отпустить файлы (Windows)
         player.pause();
@@ -442,8 +501,33 @@
       } catch (e) { toast(e.message, true); }
       render();
     } });
-    content.replaceChildren(toolbar(videosLabel(videos.length), deleteAll),
-      el("div", { class: "videos" }, videos.map(videoCard)));
+    content.replaceChildren(el("div", { class: "toolbar" }, label, search, publishAll, deleteAll),
+      el("div", { class: "videos" }, cards));
+    applySearch();
+  }
+
+  // Тексты для публикации: подпись TikTok, заголовок и описание Shorts, хэштеги — каждый с «копировать»
+  function publishBlock(v) {
+    if (v.publish) {
+      const rows = [["TikTok", v.publish.tiktok], ["Shorts — заголовок", v.publish.shorts_title],
+                    ["Shorts — описание", v.publish.shorts_description], ["Хэштеги", (v.publish.hashtags || []).join(" ")]]
+        .filter(([, text]) => text)
+        .map(([name, text]) => el("div", { class: "pub-row" },
+          el("div", { class: "pub-head" }, el("span", { text: name }),
+            el("button", { class: "ghost", text: "Копировать", onclick: () => copyText(text) })),
+          el("div", { class: "pub-text", text })));
+      return el("details", { class: "publish" }, el("summary", { text: "Тексты для публикации" }), rows);
+    }
+    if (!v.writable) return null;
+    const btn = el("button", { class: "ghost", text: "📝 Тексты для публикации", onclick: async () => {
+      btn.disabled = true;
+      try {
+        await api(`/api/videos/${encodeURIComponent(v.scene_id)}/publish`, { method: "POST" });
+        btn.textContent = "📝 Пишу тексты…";
+        refreshVideosOnChange = true;
+      } catch (e) { toast(e.message, true); btn.disabled = false; }
+    } });
+    return btn;
   }
 
   function videosLabel(n) {
@@ -490,6 +574,16 @@
         if (player) player.src = v.url;
       }
     } });
+    // Продолжение: ролик зашёл — DeepSeek пишет следующую часть с теми же героями, она придёт на проверку
+    const sequel = v.writable ? el("button", { class: "ghost", text: `📺 Часть ${(v.part || 1) + 1}`,
+      title: "продолжение с теми же героями — появится на проверке", onclick: async () => {
+        sequel.disabled = true;
+        try {
+          const r = await api(`/api/videos/${encodeURIComponent(v.scene_id)}/sequel`, { method: "POST" });
+          toast(r.new ? `Пишу часть ${(v.part || 1) + 1} — появится на проверке` : "Продолжение уже пишется");
+        } catch (e) { toast(e.message, true); }
+        sequel.disabled = false;
+      } }) : null;
     const card = el("div", { class: "video" },
       player || el("div", { class: "empty", text: "файл удалён" }),
       el("div", { class: "info" },
@@ -501,6 +595,8 @@
           v.size_mb ? el("span", { text: `${v.size_mb} МБ` }) : null,
           el("span", { text: fmtTime(v.rendered_at) })),
         videoTiming(v),
+        publishBlock(v),
+        sequel,
         el("div", { class: "actions" },
           v.url ? el("a", { href: v.url, download: "", text: "Скачать" }) : el("span"),
           del)));

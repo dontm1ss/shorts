@@ -45,7 +45,8 @@ class JobContext:
 def _after_script(scene: dict, path: Path, cfg: dict) -> dict:
     """Сценарий готов: на отбор в веб-панель (review.enabled) или сразу в работу
     (отбор выключен или включено автоодобрение). Оценка редактора ниже порога — в «Отклонённые»."""
-    from pipeline.review import auto_approve, mark_auto_approved, mark_pending, mark_rejected, processing_chain
+    from pipeline.review import (auto_approve, mark_auto_approved, mark_pending, mark_rejected, processing_chain,
+                                 publish_job)
     score = scene.get("meta", {}).get("score")
     if score and score["total"] < cfg["scoring"]["min_score"]:
         save_scene(mark_rejected(scene, f"оценка редактора {score['total']}/10: {score['verdict']}"), path)
@@ -60,7 +61,7 @@ def _after_script(scene: dict, path: Path, cfg: dict) -> dict:
         mark_auto_approved(scene)
         log.info("Автоодобрение — сразу в озвучку")
     save_scene(scene, path)
-    return {"scene": rel_path(path), "next": [processing_chain(scene, cfg, path)]}
+    return {"scene": rel_path(path), "next": [processing_chain(scene, cfg, path), [publish_job(path)]]}
 
 
 def script_batch(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dict:
@@ -154,6 +155,29 @@ def script_drama(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dic
     log.info("%s «%s» (%d сообщений) → %s", "Переписка-петля" if loop else "Переписка", scene["meta"]["title"],
              len(scene["script"]), rel_path(path))
     return _after_script(scene, path, cfg)
+
+
+def script_sequel(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dict:
+    """Продолжение готового ролика («Часть 2»): payload scene — сцена прошлой части."""
+    from scripting import DeepSeekClient, write_sequel
+    client = DeepSeekClient(cfg)
+    original = load_scene(_scene_file(payload))
+    scene = _score(_prefit(write_sequel(original, client, cfg), cfg, client), cfg, client)
+    path = scene_path(cfg, scene["scene_id"])
+    log.info("Продолжение «%s» → %s", scene["meta"]["title"], rel_path(path))
+    return _after_script(scene, path, cfg)
+
+
+def publish_meta(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dict:
+    """Тексты для публикации ролика: подпись TikTok, заголовок и описание Shorts, хэштеги
+    (output/publish/<scene_id>.json — панель и бот Telegram)."""
+    from pipeline.publish import save_publish
+    from scripting import DeepSeekClient, publish_texts
+    scene = load_scene(_scene_file(payload))
+    texts = publish_texts(scene, DeepSeekClient(cfg), cfg)
+    save_publish(cfg, scene["scene_id"], texts)
+    log.info("Тексты для публикации «%s»: %s", scene.get("meta", {}).get("title", ""), texts["tiktok"])
+    return {"scene": payload["scene"], "tiktok": texts["tiktok"]}
 
 
 # --- тяжёлые этапы --------------------------------------------------------------
@@ -276,6 +300,8 @@ HANDLERS = {
     "script_batch": script_batch,
     "script_story": script_story,
     "script_drama": script_drama,
+    "script_sequel": script_sequel,
+    "publish_meta": publish_meta,
     "tts_synthesis": tts_synthesis,
     "subtitle_generation": subtitle_generation,
     "ui_render": ui_render,

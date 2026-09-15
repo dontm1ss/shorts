@@ -17,8 +17,9 @@ from notify.telegram import notify
 log = logging.getLogger(__name__)
 
 KIND_LABEL = {"script_story": "сценарий истории", "script_drama": "сценарий переписки",
-              "script_batch": "сбор постов", "tts_synthesis": "озвучка", "subtitle_generation": "субтитры",
-              "ui_render": "запись переписки", "video_render": "рендер", "video_clip_extraction": "нарезка"}
+              "script_batch": "сбор постов", "script_sequel": "продолжение", "publish_meta": "тексты для публикации",
+              "tts_synthesis": "озвучка", "subtitle_generation": "субтитры", "ui_render": "запись переписки",
+              "video_render": "рендер", "video_clip_extraction": "нарезка"}
 TYPE_LABEL = {"reddit_story": "история", "imessage_drama": "переписка", "video_clip": "клип"}
 
 
@@ -57,6 +58,8 @@ class Digest:
         self.last_ready = clock()
 
     def job_done(self, job, result: dict) -> None:
+        if self.cfg["notify"].get("bot"):   # ролики и сценарии присылает бот панели — по одному, с кнопками
+            return
         with _safe():
             if job.kind == "video_render":
                 scene = _scene(job)
