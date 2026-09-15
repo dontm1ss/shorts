@@ -131,6 +131,7 @@ def test_claim_ready_takes_only_ready_jobs_of_kind(tmp_path):
 
 
 def test_worker_batches_ready_tts_jobs(queue_cfg, monkeypatch):
+    queue_cfg["queue"]["tts_batch_size"] = 20
     q = pipeline.worker.open_queue(queue_cfg)
     for n in range(3):
         q.enqueue_chain([{"kind": "tts_synthesis", "payload": {"n": n}},

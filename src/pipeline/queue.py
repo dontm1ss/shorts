@@ -10,6 +10,7 @@ import json
 import os
 import sqlite3
 import sys
+from collections.abc import Collection
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -103,12 +104,27 @@ class JobQueue:
 
     # --- выполнение -----------------------------------------------------------------
 
-    def claim_next(self) -> Job | None:
+    def claim_next(self, kinds: Collection[str] | None = None, exclude: Collection[str] = (),
+                   later: Collection[str] = ()) -> Job | None:
+        """Следующая готовая задача по порядку постановки. kinds — только эти виды,
+        exclude — кроме этих, later — эти виды берутся, только когда других готовых нет."""
+        where, order, args = [], "j.id", []
+        if kinds is not None:
+            if not kinds:
+                return None
+            where.append(f"j.kind IN ({', '.join('?' * len(kinds))})")
+            args += kinds
+        if exclude:
+            where.append(f"j.kind NOT IN ({', '.join('?' * len(exclude))})")
+            args += exclude
+        if later:
+            order = f"j.kind IN ({', '.join('?' * len(later))}), j.id"
         with self._tx() as c:
-            row = c.execute("""
+            row = c.execute(f"""
                 SELECT j.* FROM jobs j LEFT JOIN jobs d ON d.id = j.depends_on
                 WHERE j.status = 'pending' AND (j.depends_on IS NULL OR d.status = 'done')
-                ORDER BY j.id LIMIT 1""").fetchone()
+                {''.join(' AND ' + w for w in where)}
+                ORDER BY {order} LIMIT 1""", (*args, *later)).fetchone()
             if row is None:
                 return None
             c.execute("UPDATE jobs SET status='running', attempts=attempts+1, started_at=?, error=NULL "

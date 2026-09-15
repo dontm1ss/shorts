@@ -41,6 +41,20 @@ def test_retry_then_fail_cascades(queue):
     assert queue.claim_next().id == a
 
 
+def test_claim_by_kind_and_priority(queue):
+    script = queue.enqueue("script_story", {})
+    tts = queue.enqueue("tts_synthesis", {})
+    render = queue.enqueue("video_render", {}, depends_on=tts)
+    assert queue.claim_next(kinds=()) is None
+    assert queue.claim_next(exclude=("script_story",)).id == tts           # сценарий не берётся
+    assert queue.claim_next(exclude=("script_story",)) is None             # рендер ждёт озвучку
+    queue.complete(tts)
+    assert queue.claim_next(later=("script_story",)).id == render          # обработка — раньше сценариев
+    assert queue.claim_next(later=("script_story",)).id == script          # сценарий — когда больше нечего
+    other = queue.enqueue("script_drama", {})
+    assert queue.claim_next(kinds=("script_story", "script_drama")).id == other
+
+
 def test_reset_stale(queue):
     queue.enqueue("k", {})
     queue.claim_next()
