@@ -18,6 +18,12 @@
   let lastVideos = null;               // сколько готовых роликов — «Готовые» перерисовываются, только когда их больше
   let refreshVideosOnChange = false;   // заказаны тексты для публикации — показать, когда задача выполнится
   let videoQuery = "";                 // поиск по названию на вкладке «Готовые»
+  let me = null;                       // кто вошёл: логин, роль, привязанные площадки
+
+  const PLATFORM_LABEL = { youtube: "YouTube", tiktok: "TikTok" };
+  const PHONE_PLATFORM_LABEL = { tiktok: "TikTok", youtube: "YouTube", instagram: "Instagram" };
+  const ACCOUNT_STATUS = { new: "новый", warming: "прогревается", warmed: "прогрет",
+                           active: "активен", paused: "пауза", banned: "бан" };
 
   const $ = (sel) => document.querySelector(sel);
   const content = $("#content");
@@ -530,6 +536,64 @@
     return btn;
   }
 
+  // Отправка ролика на площадку: у каждой учётки свои привязанные канал и аккаунт
+  function uploadRow(v) {
+    if (!me) return null;
+    const items = Object.keys(PLATFORM_LABEL).map((platform) => {
+      const state = me.platforms[platform] || {};
+      const done = (v.uploads || {})[platform];
+      if (done) {
+        const where = platform === "youtube"
+          ? (done.privacy === "private" ? "на канале, скрыт" : "на канале")
+          : (done.mode === "inbox" ? "в черновиках" : "отправлен");
+        const href = platform === "youtube" ? (done.studio_url || done.url) : done.url;
+        return el("span", { class: "sent" },
+          el("span", { text: "\u2713 " + PLATFORM_LABEL[platform] + " — " + where }),
+          href ? el("a", { href, target: "_blank", rel: "noopener noreferrer", text: "открыть" }) : null);
+      }
+      if (!state.enabled || !state.linked) return null;
+      const btn = el("button", { class: "ghost", text: "\u25B6 " + PLATFORM_LABEL[platform],
+        title: "отправить ролик в " + PLATFORM_LABEL[platform] + " от имени " + (state.account || me.login),
+        onclick: async () => {
+          btn.disabled = true;
+          try {
+            const r = await api("/api/videos/" + encodeURIComponent(v.scene_id) + "/upload",
+              { method: "POST", body: { platform } });
+            btn.textContent = "\u25B6 " + PLATFORM_LABEL[platform] + " — отправляю…";
+            toast(r.new ? "Ролик встал в очередь на " + PLATFORM_LABEL[platform] : "Уже отправляется");
+            refreshVideosOnChange = true;
+          } catch (e) { toast(e.message, true); btn.disabled = false; }
+        } });
+      return btn;
+    }).filter(Boolean);
+    return items.length ? el("div", { class: "uploads" }, items) : null;
+  }
+
+  // Публикация через приложение на телефоне: не нужны привязки площадок и API-ключи,
+  // TikTok можно постить публично (через API он шлёт только в черновики)
+  function phonePostRow(v) {
+    const items = Object.keys(PHONE_PLATFORM_LABEL).map((platform) => {
+      const done = (v.uploads || {})[platform];
+      if (done && done.mode === "phone") {
+        return el("span", { class: "sent", text: "\u2713 " + PHONE_PLATFORM_LABEL[platform] + " (с телефона)" });
+      }
+      const btn = el("button", { class: "ghost", text: "\uD83D\uDCF1 " + PHONE_PLATFORM_LABEL[platform],
+        title: "опубликовать через приложение на телефоне (телефон должен быть подключён)",
+        onclick: async () => {
+          if (!confirm(`Опубликовать «${v.title || ""}» в ${PHONE_PLATFORM_LABEL[platform]} с телефона?`)) return;
+          btn.disabled = true;
+          try {
+            const r = await api(`/api/videos/${encodeURIComponent(v.scene_id)}/phone-post`,
+              { method: "POST", body: { platform } });
+            toast(r.new ? "Публикация с телефона встала в очередь" : "Уже публикуется");
+            refreshVideosOnChange = true;
+          } catch (e) { toast(e.message, true); btn.disabled = false; }
+        } });
+      return btn;
+    });
+    return el("div", { class: "uploads" }, el("span", { class: "hint", text: "с телефона:" }), ...items);
+  }
+
   function videosLabel(n) {
     return `${n} ${plural(n, "ролик", "ролика", "роликов")}`;
   }
@@ -596,6 +660,8 @@
           el("span", { text: fmtTime(v.rendered_at) })),
         videoTiming(v),
         publishBlock(v),
+        uploadRow(v),
+        phonePostRow(v),
         sequel,
         el("div", { class: "actions" },
           v.url ? el("a", { href: v.url, download: "", text: "Скачать" }) : el("span"),
@@ -625,10 +691,166 @@
       el("tbody", {}, rows))));
   }
 
+  // Личный кабинет: привязка площадок, смена пароля, у администратора — учётки
+  function platformCard(platform) {
+    const state = me.platforms[platform] || {};
+    const name = PLATFORM_LABEL[platform];
+    const rows = [];
+    if (!state.enabled) rows.push(el("div", { class: "hint", text: "Выключено в конфиге" }));
+    else if (!state.configured) {
+      rows.push(el("div", { class: "hint",
+        text: "Ключи приложения " + name + " не заданы в .env — без них привязывать нечего." }));
+      rows.push(el("div", { class: "hint" }, el("span", { text: "Адрес возврата для настроек приложения: " }),
+        el("code", { text: state.redirect_uri })));
+    } else if (state.linked) {
+      rows.push(el("div", { class: "linked" },
+        el("b", { text: state.account || "аккаунт привязан" }),
+        el("span", { class: "hint", text: state.linked_at ? "привязан " + fmtTime(state.linked_at) : "" })));
+      const off = el("button", { class: "danger", text: "Отвязать", onclick: async () => {
+        if (!confirm("Отвязать " + name + "? Ролики перестанут туда уходить.")) return;
+        off.disabled = true;
+        try { await api("/api/social/" + platform, { method: "DELETE" }); toast(name + " отвязан"); render(); }
+        catch (e) { toast(e.message, true); off.disabled = false; }
+      } });
+      rows.push(off);
+    } else {
+      const on = el("button", { text: "Привязать " + name, onclick: async () => {
+        on.disabled = true;
+        try {
+          const r = await api("/api/social/" + platform + "/link");
+          window.location.href = r.url;     // согласие площадки открывается в этой же вкладке
+        } catch (e) { toast(e.message, true); on.disabled = false; }
+      } });
+      rows.push(on);
+    }
+    const note = platform === "youtube"
+      ? "Ролики уходят на канал со статусом «" + me.youtube_privacy + "». Пока проект не прошёл аудит Google, " +
+        "YouTube всё равно делает загруженное через API приватным — открывать ролик нужно в YouTube Studio."
+      : (me.tiktok_mode === "inbox"
+        ? "Ролик уходит в черновики TikTok: подпись дописывается и публикуется в приложении."
+        : "Прямая публикация. Без аудита приложения TikTok разрешает только «видно мне» и требует, " +
+          "чтобы аккаунт был приватным.");
+    return el("div", { class: "card" }, el("h3", { text: name }), rows, el("div", { class: "hint", text: note }));
+  }
+
+  function passwordCard() {
+    const input = el("input", { type: "password", autocomplete: "new-password", placeholder: "новый пароль" });
+    const save = el("button", { text: "Сменить пароль", onclick: async () => {
+      save.disabled = true;
+      try {
+        await api("/api/me/password", { method: "POST", body: { password: input.value } });
+        input.value = "";
+        toast("Пароль изменён");
+        render();
+      } catch (e) { toast(e.message, true); }
+      save.disabled = false;
+    } });
+    return el("div", { class: "card" }, el("h3", { text: "Пароль" }),
+      me.must_change_password
+        ? el("div", { class: "warn", text: "Сейчас стоит заводской пароль — смените его." }) : null,
+      el("div", { class: "row" }, input, save));
+  }
+
+  async function usersCard() {
+    const list = await api("/api/users");
+    const rows = list.map((u) => el("tr", {},
+      el("td", { text: u.login }),
+      el("td", { text: u.role === "admin" ? "админ" : "пользователь" }),
+      el("td", { text: u.platforms.map((x) => PLATFORM_LABEL[x]).join(", ") || "—" }),
+      el("td", { text: u.must_change_password ? "заводской пароль" : "" }),
+      el("td", {}, u.login === me.login ? el("span", { class: "hint", text: "это вы" })
+        : el("button", { class: "danger", text: "Удалить", onclick: async (e) => {
+            if (!confirm("Удалить учётку " + u.login + "? Её привязки площадок пропадут.")) return;
+            e.target.disabled = true;
+            try {
+              await api("/api/users/" + encodeURIComponent(u.login), { method: "DELETE" });
+              toast("Учётка " + u.login + " удалена");
+              render();
+            } catch (err) { toast(err.message, true); e.target.disabled = false; }
+          } }))));
+    const login = el("input", { placeholder: "логин" });
+    const pass = el("input", { type: "password", autocomplete: "new-password", placeholder: "пароль" });
+    const role = el("select", {}, el("option", { value: "user", text: "пользователь" }),
+      el("option", { value: "admin", text: "админ" }));
+    const add = el("button", { text: "Добавить", onclick: async () => {
+      add.disabled = true;
+      try {
+        await api("/api/users", { method: "POST",
+          body: { login: login.value, password: pass.value, role: role.value } });
+        toast("Учётка " + login.value + " создана");
+        render();
+      } catch (e) { toast(e.message, true); add.disabled = false; }
+    } });
+    return el("div", { class: "card" }, el("h3", { text: "Учётные записи" }),
+      el("div", { class: "table-wrap" }, el("table", { class: "jobs" },
+        el("thead", {}, el("tr", {}, ["Логин", "Роль", "Площадки", "", ""].map((h) => el("th", { text: h })))),
+        el("tbody", {}, rows))),
+      el("div", { class: "row" }, login, pass, role, add));
+  }
+
+  // --- аккаунты на телефоне ---------------------------------------------------------
+
+  // Карточка аккаунта: статус жизни, прогресс прогрева, кнопки прогрева и правки статуса
+  function accountCard(a) {
+    const label = PHONE_PLATFORM_LABEL[a.platform] || a.platform;
+    const p = a.progress || {};
+    const bar = el("div", { class: "bar" },
+      el("div", { class: "bar-fill", style: "width:" + (p.percent || 0) + "%" }));
+    const warm = el("button", { text: "Прогреть сейчас", onclick: async () => {
+      warm.disabled = true;
+      try {
+        const r = await api(`/api/accounts/${a.platform}/warmup`, { method: "POST" });
+        toast(r.new ? "Сессия прогрева встала в очередь" : "Прогрев уже идёт");
+      } catch (e) { toast(e.message, true); }
+      warm.disabled = false;
+    } });
+    const statusSel = el("select", { title: "статус жизни аккаунта", onchange: async () => {
+      try {
+        await api(`/api/accounts/${a.platform}/status`, { method: "POST", body: { status: statusSel.value } });
+        toast("Статус обновлён");
+      } catch (e) { toast(e.message, true); }
+    } });
+    for (const [id, text] of Object.entries(ACCOUNT_STATUS)) statusSel.append(el("option", { value: id, text }));
+    statusSel.value = a.status;
+    const handle = el("input", { value: a.handle || "", placeholder: "@ник аккаунта (необязательно)" });
+    const saveHandle = el("button", { class: "ghost", text: "Сохранить ник", onclick: async () => {
+      try {
+        await api(`/api/accounts/${a.platform}/status`,
+          { method: "POST", body: { status: a.status, handle: handle.value } });
+        toast("Сохранено");
+      } catch (e) { toast(e.message, true); }
+    } });
+    return el("div", { class: "card" },
+      el("h3", { text: label }),
+      el("div", { class: "meta" }, el("span", { class: "badge", text: ACCOUNT_STATUS[a.status] || a.status })),
+      el("div", { class: "hint", text: `${p.sessions || 0}/${p.sessions_to_warm || 0} сессий · ` +
+        `${Math.round((p.seconds || 0) / 60)} мин прогрева · постов ${a.posts || 0}` }),
+      bar,
+      el("div", { class: "hint", text: "последний прогрев: " + (a.last_warmup_at ? fmtTime(a.last_warmup_at) : "—") }),
+      a.notes ? el("div", { class: "hint", text: "заметка: " + a.notes }) : null,
+      el("div", { class: "row" }, warm, statusSel),
+      el("div", { class: "row" }, handle, saveHandle));
+  }
+
+  async function renderAccounts() {
+    const accounts = await api("/api/accounts");
+    content.replaceChildren(el("div", { class: "account" },
+      el("div", { class: "cards" }, accounts.map(accountCard))));
+  }
+
+  async function renderAccount() {
+    await loadMe();
+    const cards = [el("div", { class: "cards" },
+      platformCard("youtube"), platformCard("tiktok"), passwordCard())];
+    if (me.role === "admin") cards.push(await usersCard());
+    content.replaceChildren(el("div", { class: "account" }, cards));
+  }
+
   async function render() {
     try {
       if (!timing) await refreshSummary();
-      await ({ pending: renderPending, rejected: renderRejected, videos: renderVideos, queue: renderQueue })[tab]();
+      await ({ pending: renderPending, rejected: renderRejected, videos: renderVideos,
+               queue: renderQueue, account: renderAccount, accounts: renderAccounts })[tab]();
     } catch (e) {
       content.replaceChildren(el("div", { class: "empty", text: "Ошибка: " + e.message }));
     }
@@ -682,12 +904,63 @@
     catch (e) { toast(e.message, true); }
   });
 
+  // --- вход ------------------------------------------------------------------------
+
+  async function loadMe() {
+    me = await api("/api/me");
+    $("#who").textContent = me.login + (me.role === "admin" ? " · админ" : "");
+    return me;
+  }
+
+  function showLogin(message) {
+    $("#app").hidden = true;
+    $("#login").hidden = false;
+    const box = $("#login-error");
+    box.textContent = message || "";
+    box.hidden = !message;
+  }
+
+  async function boot() {
+    try {
+      await loadMe();
+    } catch (e) {
+      showLogin();                       // не вошли (или сессия кончилась) — форма входа
+      return;
+    }
+    $("#login").hidden = true;
+    $("#app").hidden = false;
+    if (me.must_change_password) toast("Стоит заводской пароль — смените его в кабинете", true);
+    await refreshSummary();
+    render();
+    if (!boot.timer) boot.timer = setInterval(refreshSummary, 8000);
+  }
+
+  $("#login-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const btn = form.querySelector("button");
+    btn.disabled = true;
+    try {
+      await api("/api/login", { method: "POST", body: { login: form.login.value, password: form.password.value } });
+      form.password.value = "";
+      await boot();
+    } catch (err) { showLogin(err.message); }
+    btn.disabled = false;
+  });
+
+  $("#logout").addEventListener("click", async () => {
+    try { await api("/api/logout", { method: "POST" }); } catch (e) { /* всё равно показываем вход */ }
+    clearInterval(boot.timer);
+    boot.timer = null;
+    me = null;
+    showLogin("Вы вышли");
+  });
+
   // вкладки закреплены под шапкой, а её высота меняется (телефон, перенос статуса обработчика)
   const header = $(".top");
   const syncHeader = () => document.documentElement.style.setProperty("--header-h", header.offsetHeight + "px");
   new ResizeObserver(syncHeader).observe(header);
   syncHeader();
 
-  refreshSummary().then(render);
-  setInterval(refreshSummary, 8000);
+  boot();
 })();

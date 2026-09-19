@@ -32,6 +32,7 @@ from scripting import estimate_duration_s
 log = logging.getLogger(__name__)
 
 TYPE_LABEL = {"reddit_story": "история", "imessage_drama": "переписка", "video_clip": "клип"}
+PHONE_LABEL = {"tiktok": "TikTok", "youtube": "YouTube", "instagram": "Instagram"}
 VIDEO_LIMIT = 49 * 2 ** 20          # бот отправляет файлы до 50 МБ
 TEXTS_WAIT_S = 600                  # тексты для публикации ещё пишутся — ролик ждёт их не дольше
 FIRST_SCRIPTS = 10                  # при первом запуске — сколько ждущих проверки прислать
@@ -186,13 +187,21 @@ class FarmBot:
             self._revise(token, chat, self.state["notes"].pop(reply_to), text)
         elif text.startswith("/status"):
             self._send(token, chat, self._status())
+        elif text.startswith("/accounts"):
+            self._send(token, chat, self._accounts_text())
+        elif text.startswith("/warmup"):
+            platform = text.split()[1:2]
+            self._send(token, chat, self._warmup(platform[0] if platform else ""))
         elif text.startswith(("/start", "/help")):
             self._send(token, chat, "Бот фермы shorts: сценарии на проверку — с кнопками, готовые ролики — с текстами "
-                                    "для публикации (нажмите на текст, чтобы скопировать). /status — очередь.")
+                                    "для публикации и кнопками публикации с телефона. /status — очередь, "
+                                    "/accounts — аккаунты, /warmup tiktok — прогрев.")
 
     def _on_button(self, token: str, chat: str, query: dict) -> None:
         from panel import app as panel                                  # панель запускает бота, бот — её действия
-        action, _, scene_id = (query.get("data") or "").partition(":")
+        parts = (query.get("data") or "").split(":")
+        action = parts[0] if parts else ""
+        scene_id = parts[1] if len(parts) > 1 else ""
         message = query.get("message") or {}
         answer, done = "", None
         if str((query.get("from") or {}).get("id")) != chat:
@@ -215,6 +224,13 @@ class FarmBot:
                     _, new = panel.enqueue_once(self.cfg, "script_sequel", scene_id)
                     panel.start_worker(self.cfg)
                     answer = "Пишу продолжение — пришлю на проверку" if new else "Продолжение уже пишется"
+                elif action == "pp":
+                    platform = parts[2] if len(parts) > 2 else ""
+                    _, new = panel.enqueue_phone(self.cfg, "phone_post",
+                                                 {"scene_id": scene_id, "platform": platform})
+                    panel.start_worker(self.cfg)
+                    answer = (f"Публикую в {PHONE_LABEL.get(platform, platform)} с телефона"
+                              if new else "Уже публикуется")
             except ReviewError as e:
                 answer = str(e)
         call(token, "answerCallbackQuery", callback_query_id=query["id"], text=answer[:190], show_alert=False)
@@ -244,7 +260,31 @@ class FarmBot:
                 f"упало {counts.get('failed', 0)}\n"
                 f"Обработчик: {'работает' if panel.worker_running(self.cfg) else 'остановлен'}\n"
                 f"На проверке: {len(list_scenes(self.cfg, 'pending'))}\n"
-                f"Готовых роликов: {len(manifest.entries(self.cfg))}")
+                f"Готовых роликов: {len(manifest.entries(self.cfg))}\n\n" + self._accounts_text())
+
+    def _accounts_text(self) -> str:
+        """Статусы аккаунтов на телефоне: жизнь и прогресс прогрева."""
+        from phone import accounts as phone_accounts
+        lines = ["📱 <b>Аккаунты на телефоне</b>"]
+        for platform, rec in phone_accounts.all(self.cfg).items():
+            p = phone_accounts.progress(self.cfg, rec)
+            status = phone_accounts.STATUS_LABEL.get(rec["status"], rec["status"])
+            handle = f" {esc(rec['handle'])}" if rec.get("handle") else ""
+            lines.append(f"{PHONE_LABEL.get(platform, platform)}{handle} — <b>{status}</b>, "
+                         f"сессий {p['sessions']}/{p['sessions_to_warm']} ({p['percent']}%), "
+                         f"постов {rec.get('posts', 0)}")
+        lines.append("\nПрогрев: /warmup tiktok | youtube | instagram")
+        return "\n".join(lines)
+
+    def _warmup(self, platform: str) -> str:
+        from panel import app as panel
+        from phone import accounts as phone_accounts
+        if platform not in phone_accounts.platforms(self.cfg):
+            return "Укажите площадку: /warmup tiktok | youtube | instagram"
+        _, new = panel.enqueue_phone(self.cfg, "phone_warmup", {"platform": platform})
+        panel.start_worker(self.cfg)
+        return (f"🔥 Прогрев {PHONE_LABEL.get(platform, platform)} встал в очередь"
+                if new else "Прогрев уже идёт")
 
     # --- рассылка ------------------------------------------------------------------------
 
@@ -289,9 +329,15 @@ class FarmBot:
             pass
         kind = TYPE_LABEL.get(entry.get("type"), "ролик") + (" ↻" if entry.get("loop") else "")
         caption = f"🎬 <b>{esc(entry.get('title') or kind)}</b> — {kind}, {round(entry.get('duration_s') or 0)} с"
-        markup = ({"inline_keyboard": [[{"text": f"📺 Часть {int(meta.get('part', 1)) + 1}",
-                                         "callback_data": f"sq:{entry['scene_id']}"}]]} if writable else None)
-        extra = {"reply_markup": markup} if markup else {}
+        scene_id = entry["scene_id"]
+        keyboard = []
+        if writable:
+            keyboard.append([{"text": f"📺 Часть {int(meta.get('part', 1)) + 1}",
+                              "callback_data": f"sq:{scene_id}"}])
+        # публикация через приложение на телефоне: TikTok так можно постить публично
+        keyboard.append([{"text": "📱 " + PHONE_LABEL[p], "callback_data": f"pp:{scene_id}:{p}"}
+                         for p in ("tiktok", "youtube", "instagram")])
+        extra = {"reply_markup": {"inline_keyboard": keyboard}}
         path = output_dir(self.cfg, "videos", Path(entry.get("output", "")).name)
         if path.is_file() and path.stat().st_size <= VIDEO_LIMIT:
             with open(path, "rb") as fh:

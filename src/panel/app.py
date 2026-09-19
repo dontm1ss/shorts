@@ -25,11 +25,15 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 
+from core import config as core_config
 from core.config import ROOT
 from core.emotions import DEFAULT as DEFAULT_EMOTION, EMOTIONS
 from core.scene import output_dir, rel_path, scene_path
 from notify import notify
+from panel import users
 from panel.telegram_bot import FarmBot
+from phone import PhoneError
+from phone import accounts as phone_accounts
 from pipeline import manifest
 from pipeline.publish import load_publish
 from pipeline.queue import WorkerLock
@@ -37,11 +41,15 @@ from pipeline.review import (ReviewError, approve, auto_approve, delete_scenes, 
                              reject, restore, revising, set_auto_approve, set_texts, start_revision)
 from pipeline.worker import open_queue
 from scripting import estimate_duration_s, word_count
+from upload import PLATFORMS, links, platform_module
+from upload import history as upload_history
 
 log = logging.getLogger(__name__)
 
 WEB = Path(__file__).resolve().parent / "web"
 STATIC = {"app.js": "text/javascript", "style.css": "text/css"}
+COOKIE = "shorts_session"
+OAUTH_TTL_S = 900            # столько живёт начатая привязка площадки (успеть согласиться в браузере)
 VIDEO_NAME = re.compile(r"^[\w.-]+\.mp4$")
 SCENE_ID = re.compile(r"^[\w-]{1,80}$")
 PROCESSING_KINDS = ("tts_synthesis", "subtitle_generation", "ui_render", "video_render")
@@ -63,10 +71,46 @@ class SettingsBody(BaseModel):
     auto_approve: bool
 
 
+class LoginBody(BaseModel):
+    login: str
+    password: str
+
+
+class PasswordBody(BaseModel):
+    password: str
+
+
+class NewUserBody(BaseModel):
+    login: str
+    password: str
+    role: str = "user"
+
+
+class UploadBody(BaseModel):
+    platform: str
+
+
+class AccountStatusBody(BaseModel):
+    status: str
+    notes: str | None = None
+    handle: str | None = None
+
+
 class ReviseBody(BaseModel):
     note: str                              # что изменить — своими словами
     texts: list[str] | None = None         # несохранённые правки карточки — применяются до переписывания
     emotions: list[str] | None = None
+
+
+def _oauth_page(message: str, ok: bool = False) -> Response:
+    """Страница, на которую площадка возвращает браузер после согласия: результат и путь назад
+    в панель. Своего адреса у площадки нет — она умеет вернуть только на этот."""
+    colour = "#1f8b4c" if ok else "#b3261e"
+    body = (f"<h2 style='color:{colour}'>{'Готово' if ok else 'Не вышло'}</h2>"
+            f"<p>{message}</p><p><a href='/'>Вернуться в панель</a></p>")
+    return Response(f"<html><head><meta charset='utf-8'><title>shorts</title></head>"
+                    f"<body style='font-family:system-ui;margin:3rem'>{body}</body></html>",
+                    media_type="text/html")
 
 
 def scene_card(scene: dict, cfg: dict) -> dict:
@@ -234,6 +278,34 @@ def enqueue_once(cfg: dict, kind: str, scene_id: str) -> tuple[int, bool]:
         queue.close()
 
 
+def enqueue_upload(cfg: dict, scene_id: str, platform: str, user: str) -> tuple[int, bool]:
+    """Отправка ролика на площадку — задачей очереди. Такая же уже ждёт или идёт (тот же ролик,
+    та же площадка) — вторая не ставится: одно лишнее нажатие не выложит ролик дважды."""
+    queue = open_queue(cfg)
+    try:
+        for status in ("pending", "running"):
+            for job in queue.jobs(status, limit=100_000, kinds=("social_upload",)):
+                if job.payload.get("scene_id") == scene_id and job.payload.get("platform") == platform:
+                    return job.id, False
+        return queue.enqueue("social_upload", {"scene_id": scene_id, "platform": platform, "user": user}), True
+    finally:
+        queue.close()
+
+
+def enqueue_phone(cfg: dict, kind: str, payload: dict) -> tuple[int, bool]:
+    """Телефонная задача (прогрев или публикация) — задачей очереди. Такая же уже ждёт или идёт
+    (совпадают все ключи payload) — вторая не ставится."""
+    queue = open_queue(cfg)
+    try:
+        for status in ("pending", "running"):
+            for job in queue.jobs(status, limit=100_000, kinds=(kind,)):
+                if all(job.payload.get(k) == v for k, v in payload.items()):
+                    return job.id, False
+        return queue.enqueue(kind, payload), True
+    finally:
+        queue.close()
+
+
 def scene_meta(cfg: dict, scene_id: str) -> dict:
     try:
         return json.loads(scene_path(cfg, scene_id).read_text(encoding="utf-8")).get("meta", {})
@@ -268,27 +340,49 @@ def create_app(cfg: dict) -> FastAPI:
         stop.set()
 
     app = FastAPI(title="shorts", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
-    user, password = cfg["panel"]["user"], cfg["panel"].get("password")
+    basic_user, basic_password = cfg["panel"]["user"], cfg["panel"].get("password")
+    created = users.ensure_seed(cfg)
+    if created:
+        log.info("Созданы учётки панели: %s — пароли из config [panel.seed], сменить в личном кабинете",
+                 ", ".join(created))
 
-    def authorized(header: str) -> bool:
-        if not header.startswith("Basic "):
-            return False
+    def basic_login(header: str) -> str | None:
+        """Вход по HTTP Basic оставлен для скриптов и старых закладок: логин panel.user
+        с PANEL_PASSWORD. Людям — вход по логину и паролю учётки."""
+        if not (basic_password and header.startswith("Basic ")):
+            return None
         try:
             got_user, _, got_pass = base64.b64decode(header[6:]).decode("utf-8").partition(":")
         except (ValueError, UnicodeDecodeError):
-            return False
-        return (secrets.compare_digest(got_user.encode(), user.encode())
-                and secrets.compare_digest(got_pass.encode(), password.encode()))
+            return None
+        ok = (secrets.compare_digest(got_user.encode(), basic_user.encode())
+              and secrets.compare_digest(got_pass.encode(), basic_password.encode()))
+        return basic_user if ok and users.get(cfg, basic_user) else None
+
+    def current_user(request: Request) -> str | None:
+        return (users.read_token(cfg, request.cookies.get(COOKIE, ""))
+                or basic_login(request.headers.get("authorization", "")))
 
     @app.middleware("http")
     async def guard(request: Request, call_next):
-        if password and not authorized(request.headers.get("authorization", "")):
-            await asyncio.sleep(1)                       # замедлить перебор пароля
-            return Response(status_code=401, headers={"WWW-Authenticate": 'Basic realm="shorts", charset="UTF-8"'})
+        path = request.url.path
+        open_path = path in ("/", "/favicon.ico", "/api/login") or path.startswith("/static/")
+        if not open_path:
+            login = current_user(request)
+            if not login:
+                await asyncio.sleep(1)                   # замедлить перебор пароля
+                return JSONResponse({"detail": "нужен вход"}, status_code=401)
+            request.state.user = login
+            request.state.role = (users.get(cfg, login) or {}).get("role", "user")
         # CSRF: браузер не пошлёт нестандартный заголовок с чужого сайта без CORS, а CORS мы не разрешаем
         if request.method in ("POST", "PUT", "DELETE") and request.headers.get("x-panel") != "1":
             return JSONResponse({"detail": "нет заголовка X-Panel"}, status_code=403)
         return await call_next(request)
+
+    def require_admin(request: Request) -> str:
+        if getattr(request.state, "role", "user") != "admin":
+            raise HTTPException(status_code=403, detail="Нужны права администратора")
+        return request.state.user
 
     def fail(e: Exception):
         raise HTTPException(status_code=400, detail=str(e))
@@ -428,6 +522,7 @@ def create_app(cfg: dict) -> FastAPI:
     def videos():
         entries = manifest.entries(cfg)[-200:]
         work = work_seconds(cfg)
+        uploaded = upload_history.entries(cfg)
         result = []
         for entry in reversed(entries):
             file = output_dir(cfg, "videos", Path(entry.get("output", "")).name)
@@ -442,8 +537,59 @@ def create_app(cfg: dict) -> FastAPI:
                            # тексты для публикации и продолжение — у роликов со сценарием (не у клипов)
                            "writable": entry.get("type") in ("reddit_story", "imessage_drama"),
                            "part": int(meta.get("part", 1)),
-                           "publish": load_publish(cfg, scene_id) if SCENE_ID.match(scene_id) else None})
+                           "publish": load_publish(cfg, scene_id) if SCENE_ID.match(scene_id) else None,
+                           "uploads": uploaded.get(scene_id) or {}})
         return result
+
+    @app.post("/api/videos/{scene_id}/upload")
+    def upload_video(request: Request, scene_id: str, body: UploadBody):
+        """Отправить готовый ролик на площадку от имени вошедшей учётки — задачей лёгкой линии,
+        чтобы долгая загрузка не держала панель и переживала обрыв сети."""
+        if body.platform not in PLATFORMS:
+            raise HTTPException(status_code=404, detail="Неизвестная площадка")
+        if not cfg[body.platform]["enabled"]:
+            raise HTTPException(status_code=400, detail=f"Выгрузка на {body.platform} выключена в конфиге")
+        if not links.get(cfg, request.state.user, body.platform):
+            raise HTTPException(status_code=400,
+                                detail=f"{body.platform} не привязан — личный кабинет")
+        if manifest.find(cfg, scene_id) is None:
+            raise HTTPException(status_code=404, detail="Нет такого ролика")
+        job, new = enqueue_upload(cfg, scene_id, body.platform, request.state.user)
+        return {"job": job, "new": new, "worker_started": start_worker(cfg) if new else False}
+
+    @app.get("/api/accounts")
+    def accounts_list():
+        """Аккаунты площадок на телефоне: статус жизни, прогресс прогрева, история."""
+        return [{"platform": p, **rec, "progress": phone_accounts.progress(cfg, rec)}
+                for p, rec in phone_accounts.all(cfg).items()]
+
+    @app.post("/api/accounts/{platform}/warmup")
+    def account_warmup(platform: str):
+        """Сессия прогрева аккаунта — задачей телефонной линии (adb + uiautomator2)."""
+        if platform not in phone_accounts.platforms(cfg):
+            raise HTTPException(status_code=404, detail="Нет такого аккаунта на телефоне")
+        job, new = enqueue_phone(cfg, "phone_warmup", {"platform": platform})
+        return {"job": job, "new": new, "worker_started": start_worker(cfg) if new else False}
+
+    @app.post("/api/accounts/{platform}/status")
+    def account_status(request: Request, platform: str, body: AccountStatusBody):
+        """Ручная правка статуса/заметки/ника аккаунта (админ)."""
+        require_admin(request)
+        try:
+            return phone_accounts.set_status(cfg, platform, body.status, body.notes, body.handle)
+        except PhoneError as e:
+            fail(e)
+
+    @app.post("/api/videos/{scene_id}/phone-post")
+    def phone_post_video(scene_id: str, body: UploadBody):
+        """Опубликовать ролик через приложение на телефоне (TikTok / YouTube / Instagram) —
+        задачей телефонной линии. В отличие от /upload не нужны привязки площадок."""
+        if body.platform not in phone_accounts.platforms(cfg):
+            raise HTTPException(status_code=404, detail="Нет такого аккаунта на телефоне")
+        if manifest.find(cfg, scene_id) is None:
+            raise HTTPException(status_code=404, detail="Нет такого ролика")
+        job, new = enqueue_phone(cfg, "phone_post", {"scene_id": scene_id, "platform": body.platform})
+        return {"job": job, "new": new, "worker_started": start_worker(cfg) if new else False}
 
     @app.post("/api/videos/{scene_id}/publish")
     def publish(scene_id: str):
@@ -490,6 +636,7 @@ def create_app(cfg: dict) -> FastAPI:
             else:
                 busy += 1
         manifest.remove(cfg, *deleted)
+        upload_history.forget(cfg, *deleted)
         return {"deleted": len(deleted), "busy": busy}
 
     @app.delete("/api/videos/{scene_id}")
@@ -501,6 +648,7 @@ def create_app(cfg: dict) -> FastAPI:
         if not delete_video_files(cfg, entry):
             raise HTTPException(status_code=409, detail="Файл занят — остановите видео и попробуйте ещё раз")
         manifest.remove(cfg, scene_id)
+        upload_history.forget(cfg, scene_id)
         return {"deleted": Path(entry.get("output", "")).name}
 
     @app.delete("/api/scenes")
@@ -509,6 +657,156 @@ def create_app(cfg: dict) -> FastAPI:
             return {"deleted": delete_scenes(cfg, status, ids)}
         except ReviewError as e:
             fail(e)
+
+    # --- вход и личный кабинет ----------------------------------------------------
+
+    pending_oauth: dict[str, dict] = {}       # state → кто и что привязывает (живёт OAUTH_TTL_S)
+
+    def set_session(request: Request, response, login: str):
+        """Кука сессии. Secure — по тому, как пришёл запрос (через Caddy это заголовок
+        X-Forwarded-Proto): на локальной панели по http кука с Secure просто не вернулась бы."""
+        proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+        response.set_cookie(COOKIE, users.make_token(cfg, login), httponly=True, samesite="lax",
+                            max_age=int(cfg["panel"]["session_hours"] * 3600), secure=proto == "https")
+        return response
+
+    @app.post("/api/login")
+    async def login(request: Request, body: LoginBody):
+        account = users.authenticate(cfg, body.login.strip(), body.password)
+        if not account:
+            await asyncio.sleep(1)                       # замедлить перебор пароля
+            raise HTTPException(status_code=401, detail="Неверный логин или пароль")
+        log.info("Вход в панель: %s", account["login"])
+        return set_session(request, JSONResponse(account), account["login"])
+
+    @app.post("/api/logout")
+    def logout():
+        response = JSONResponse({"ok": True})
+        response.delete_cookie(COOKIE)
+        return response
+
+    @app.get("/api/me")
+    def me(request: Request):
+        """Кто вошёл, что у него привязано и готовы ли площадки к работе вообще."""
+        login = request.state.user
+        mine = links.of_user(cfg, login)
+        platforms = {}
+        for platform in PLATFORMS:
+            module = platform_module(platform)
+            link = mine.get(platform) or {}
+            platforms[platform] = {
+                "enabled": bool(cfg[platform]["enabled"]),
+                "configured": module.configured(),       # ключи приложения в .env
+                "redirect_uri": module.redirect_uri(cfg),
+                "linked": bool(link),
+                "account": link.get("channel_title") or link.get("display_name") or link.get("username") or "",
+                "linked_at": link.get("linked_at", ""),
+            }
+        return {"login": login, "role": request.state.role,
+                "must_change_password": bool((users.get(cfg, login) or {}).get("must_change_password")),
+                "platforms": platforms,
+                "youtube_privacy": cfg["youtube"]["privacy_status"], "tiktok_mode": cfg["tiktok"]["mode"]}
+
+    @app.post("/api/me/password")
+    def change_password(request: Request, body: PasswordBody):
+        try:
+            users.set_password(cfg, request.state.user, body.password)
+        except users.UserError as e:
+            fail(e)
+        log.info("Пароль сменён: %s", request.state.user)
+        return {"ok": True}
+
+    # --- привязка площадок --------------------------------------------------------
+
+    @app.get("/api/social/{platform}/link")
+    def social_link(request: Request, platform: str):
+        """Начало привязки: ссылка на согласие площадки. Возврат — на /api/social/<platform>/callback."""
+        if platform not in PLATFORMS:
+            raise HTTPException(status_code=404, detail="Неизвестная площадка")
+        module = platform_module(platform)
+        if not module.configured():
+            raise HTTPException(status_code=400, detail=f"В .env нет ключей приложения {platform}")
+        state = secrets.token_urlsafe(24)
+        try:
+            url = module.auth_url(cfg, state)
+        except RuntimeError as e:
+            fail(e)
+        verifier = None
+        if isinstance(url, tuple):                       # TikTok отдаёт ещё и code_verifier (PKCE)
+            url, verifier = url
+        for old, rec in list(pending_oauth.items()):     # подчистить брошенные привязки
+            if time.time() - rec["at"] > OAUTH_TTL_S:
+                pending_oauth.pop(old, None)
+        pending_oauth[state] = {"user": request.state.user, "platform": platform,
+                                "verifier": verifier, "at": time.time()}
+        return {"url": url}
+
+    @app.get("/api/social/{platform}/callback")
+    def social_callback(request: Request, platform: str, code: str = "", state: str = "", error: str = ""):
+        """Возврат из браузера после согласия. Привязка сохраняется за той учёткой, которая её начала,
+        — state сверяется с сохранённым, чужой ответ не принимается."""
+        record = pending_oauth.pop(state, None)
+        if error or not code:
+            return _oauth_page(f"Доступ не выдан: {error or 'площадка не вернула код'}")
+        if not record or record["platform"] != platform:
+            return _oauth_page("Привязка не найдена или устарела — начните заново из личного кабинета")
+        if record["user"] != request.state.user:
+            return _oauth_page("Привязку начинала другая учётка — войдите под ней и повторите")
+        module = platform_module(platform)
+        try:
+            link = (module.link_account(cfg, record["user"], code, record["verifier"]) if record["verifier"]
+                    else module.link_account(cfg, record["user"], code))
+        except RuntimeError as e:
+            return _oauth_page(str(e))
+        name = link.get("channel_title") or link.get("display_name") or link.get("username") or ""
+        log.info("%s привязан к учётке %s (%s)", platform, record["user"], name)
+        return _oauth_page(f"{platform} привязан: {name}".strip(), ok=True)
+
+    @app.delete("/api/social/{platform}")
+    def social_unlink(request: Request, platform: str):
+        if platform not in PLATFORMS:
+            raise HTTPException(status_code=404, detail="Неизвестная площадка")
+        return {"unlinked": platform_module(platform).unlink_account(cfg, request.state.user)}
+
+    # --- учётки (администратор) ---------------------------------------------------
+
+    @app.get("/api/users")
+    def all_users(request: Request):
+        require_admin(request)
+        linked = {platform: links.users_with(cfg, platform) for platform in PLATFORMS}
+        return [{**u, "platforms": [p for p in PLATFORMS if u["login"] in linked[p]]}
+                for u in users.list_users(cfg)]
+
+    @app.post("/api/users")
+    def create_user(request: Request, body: NewUserBody):
+        require_admin(request)
+        try:
+            users.add_user(cfg, body.login, body.password, body.role)
+        except users.UserError as e:
+            fail(e)
+        return {"created": body.login}
+
+    @app.post("/api/users/{login}/password")
+    def reset_password(request: Request, login: str, body: PasswordBody):
+        require_admin(request)
+        try:
+            users.set_password(cfg, login, body.password)
+        except users.UserError as e:
+            fail(e)
+        return {"ok": True}
+
+    @app.delete("/api/users/{login}")
+    def remove_user(request: Request, login: str):
+        require_admin(request)
+        if login == request.state.user:
+            raise HTTPException(status_code=400, detail="Себя удалить нельзя")
+        try:
+            users.delete_user(cfg, login)
+        except users.UserError as e:
+            fail(e)
+        for platform in PLATFORMS:
+            links.remove(cfg, login, platform)
+        return {"deleted": login}
 
     @app.get("/media/videos/{name}")
     def media(name: str):

@@ -180,6 +180,33 @@ def publish_meta(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dic
     return {"scene": payload["scene"], "tiktok": texts["tiktok"]}
 
 
+def social_upload(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dict:
+    """Отправка готового ролика на площадку (YouTube или TikTok) от имени учётки панели:
+    payload — scene_id, platform, user. Сеть, не GPU, поэтому задача идёт лёгкой линией."""
+    from upload import upload_scene
+    result = upload_scene(cfg, payload["scene_id"], payload["platform"], payload["user"])
+    return {"scene_id": payload["scene_id"], "platform": payload["platform"],
+            **{k: v for k, v in result.items() if k in ("url", "video_id", "publish_id", "privacy", "mode")}}
+
+
+def phone_post(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dict:
+    """Публикация ролика через приложение на телефоне (TikTok / YouTube Shorts / Instagram Reels):
+    payload — scene_id, platform. В отличие от social_upload не нужны ключи API площадок и
+    позволяет постить публично (TikTok через API шлёт только в черновики). Телефон должен быть
+    подключён по USB к этому ПК (adb). Идёт лёгкой линией — это телефон, а не GPU."""
+    from phone import post as phone_post_module
+    result = phone_post_module.post(cfg, payload["scene_id"], payload["platform"])
+    return {"scene_id": payload["scene_id"], "platform": payload["platform"],
+            "caption": result.get("caption", "")}
+
+
+def phone_warmup(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dict:
+    """Прогрев аккаунта площадки на телефоне: payload — platform (tiktok | youtube | instagram).
+    Сессия просмотра ленты по тематике проекта; по её итогу обновляется статус аккаунта."""
+    from phone import warmup
+    return warmup.run(cfg, payload.get("platform", "tiktok"))
+
+
 # --- тяжёлые этапы --------------------------------------------------------------
 
 def tts_synthesis(payload: dict, cfg: dict, ctx: JobContext | None = None) -> dict:
@@ -302,6 +329,9 @@ HANDLERS = {
     "script_drama": script_drama,
     "script_sequel": script_sequel,
     "publish_meta": publish_meta,
+    "social_upload": social_upload,
+    "phone_post": phone_post,
+    "phone_warmup": phone_warmup,
     "tts_synthesis": tts_synthesis,
     "subtitle_generation": subtitle_generation,
     "ui_render": ui_render,

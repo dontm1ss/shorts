@@ -30,7 +30,9 @@ log = logging.getLogger(__name__)
 
 BATCH_KINDS = {"tts_synthesis"}
 # сеть (DeepSeek, форумы), не GPU
-LIGHT_KINDS = ("script_story", "script_drama", "script_batch", "script_sequel", "publish_meta")
+LIGHT_KINDS = ("script_story", "script_drama", "script_batch", "script_sequel", "publish_meta", "social_upload")
+# телефон (adb + uiautomator2) — своя линия: не занимает GPU и не блокирует сценарии
+PHONE_KINDS = ("phone_warmup", "phone_post")
 
 # Windows: задача получает скрытую консоль. Иначе у воркера без консоли (запуск из панели)
 # каждая задача открывала своё окно — закроешь его, и озвучка падает
@@ -88,13 +90,16 @@ def _run_subprocess(jobs: list[Job], cfg: dict) -> dict[int, tuple[bool, dict, s
 
 
 def _claim(queue: JobQueue, lane: str, cfg: dict) -> list[Job]:
-    """Задачи для линии: light — сценарии; heavy — обработка (озвучка — пачкой до tts_batch_size)."""
+    """Задачи для линии: light — сценарии; phone — телефон; heavy — обработка
+    (озвучка — пачкой до tts_batch_size)."""
     if lane == "light":
         job = queue.claim_next(kinds=LIGHT_KINDS)
+    elif lane == "phone":
+        job = queue.claim_next(kinds=PHONE_KINDS)
     elif cfg["queue"].get("light_lane", True):
-        job = queue.claim_next(exclude=LIGHT_KINDS)
-    else:   # одна линия: сценарии — только когда обработке нечего делать
-        job = queue.claim_next(later=LIGHT_KINDS)
+        job = queue.claim_next(exclude=LIGHT_KINDS + PHONE_KINDS)
+    else:   # одна линия: сценарии и телефон — только когда обработке нечего делать
+        job = queue.claim_next(later=LIGHT_KINDS + PHONE_KINDS)
     if job is None:
         return []
     jobs = [job]
@@ -130,7 +135,7 @@ def run_worker(cfg: dict, stop_when_empty: bool = True, poll_s: float = 3.0) -> 
     if not lock.acquire():
         raise RuntimeError("Воркер уже запущен (output/queue.lock занят) — задачи строго по одной")
     queue = open_queue(cfg)   # очередь — только в этом потоке; в потоках линий — лишь ожидание процессов
-    lanes = ("heavy", "light") if cfg["queue"].get("light_lane", True) else ("heavy",)
+    lanes = ("heavy", "light", "phone") if cfg["queue"].get("light_lane", True) else ("heavy", "phone")
     running: dict[str, tuple[Future, list[Job], float]] = {}
     pool = ThreadPoolExecutor(max_workers=len(lanes), thread_name_prefix="lane")
     digest = Digest(cfg)   # сводки в Telegram: упавшие задачи, готовые ролики, сценарии на проверке

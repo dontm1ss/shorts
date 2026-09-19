@@ -35,6 +35,11 @@ processed_forum_ids = "data/processed-forum-ids.json"
 scripting_history = "data/scripting-history.json"   # для разнообразия историй/переписок (scripting.params)
 manifest = "output/manifest.json"                   # список готовых роликов (pipeline.manifest)
 deepseek_state = "output/deepseek-state.json"       # основная модель DeepSeek недавно не ответила (scripting/client.py)
+users = "data/users.json"                           # учётки панели, пароли хэшами (panel.users)
+panel_secret = "data/panel-secret"                  # ключ подписи кук сессии, создаётся сам
+social_links = "data/social-links.json"             # привязки YouTube/TikTok по пользователям (upload.links)
+uploads = "output/uploads.json"                     # что и куда уже отправлено (upload.history)
+phone_accounts = "data/phone-accounts.json"         # аккаунты на телефоне: статус жизни и прогрева (phone.accounts)
 
 [deepseek]
 base_url = "https://api.deepseek.com"
@@ -228,10 +233,97 @@ rewrite_attempts = 1
 [panel]
 host = "127.0.0.1"   # только локально; наружу — через туннель на сервер (docs/panel-deploy.md)
 port = 8765
-user = "admin"       # пароль — PANEL_PASSWORD в .env; без него панель пускает всех (только localhost!)
+user = "admin"       # для входа по HTTP Basic (скрипты); пароль — PANEL_PASSWORD в .env
+# Адрес панели снаружи: на него YouTube и TikTok возвращают браузер после согласия.
+# Пусто — берётся notify.panel_url. Тот же адрес прописывается в настройках приложений площадок.
+public_url = ""
+session_hours = 720  # сколько живёт вход в браузере (30 суток)
 # Сторож: раз в столько секунд панель проверяет обработчик очереди — есть задачи, а он не запущен
 # (упал, ПК перезагрузился) — запускает и пишет в Telegram. 0 — выключить.
 watchdog_s = 60
+
+# Учётки при первом запуске. Создаются, только если их ещё нет в data/users.json: сменённый
+# пароль перезапуск не откатывает. Заводские пароли нужно сменить в личном кабинете —
+# панель до смены показывает предупреждение.
+[panel.seed.admin]
+password = "admin67"
+role = "admin"
+[panel.seed.user1]
+password = "user167"
+[panel.seed.user2]
+password = "user267"
+[panel.seed.user3]
+password = "user367"
+[panel.seed.user4]
+password = "user467"
+[panel.seed.user5]
+password = "user567"
+
+# Выгрузка на YouTube (Data API v3). Ключи приложения — в .env (YOUTUBE_CLIENT_ID/SECRET),
+# канал привязывается в личном кабинете панели.
+[youtube]
+enabled = true
+# ВАЖНО: пока проект в Google Cloud не прошёл аудит, YouTube принудительно делает
+# загруженные через API ролики приватными (политика для проектов после 28.07.2020).
+# Ролик уезжает на канал с готовыми текстами, а открывает его владелец в YouTube Studio.
+# После аудита — поставить "public", и цепочка станет сквозной.
+privacy_status = "private"     # private | unlisted | public
+category_id = 24               # 24 — «Развлечения», 23 — «Юмор», 22 — «Люди и блоги»
+language = "ru"
+made_for_kids = false
+synthetic_media = true         # речь синтезирована — YouTube требует это отмечать
+auto_upload = false            # отправлять на канал сразу после рендера, без нажатия в панели
+max_retries = 5                # попыток после обрыва; загрузка продолжается с места разрыва
+
+# Выгрузка в TikTok (Content Posting API). Ключи — в .env (TIKTOK_CLIENT_KEY/SECRET),
+# аккаунт привязывается в личном кабинете панели.
+[tiktok]
+enabled = true
+# inbox  — ролик уходит в черновики TikTok, автор дописывает подпись и публикует из приложения.
+#          Работает без аудита приложения и позволяет публиковать публично.
+# direct — прямая публикация. Без аудита TikTok разрешает только SELF_ONLY и требует, чтобы
+#          аккаунт на момент отправки был приватным, — до аудита режим почти бесполезен.
+mode = "inbox"
+privacy_level = "SELF_ONLY"    # для direct: PUBLIC_TO_EVERYONE | MUTUAL_FOLLOW_FRIENDS | SELF_ONLY
+disable_duet = false
+disable_comment = false
+disable_stitch = false
+cover_timestamp_ms = 1000      # кадр обложки для direct
+auto_upload = false
+max_retries = 3
+# TikTok разрешает приложению без аудита не больше 5 незавершённых отправок за сутки на аккаунт.
+
+# Управление физическим телефоном (Android 13, Galaxy A51) через adb + uiautomator2.
+# Телефон подключается по USB к прод-ПК, тулинг ставится скриптом scripts\setup_phone.ps1.
+# Здесь — пакеты приложений, куда класть ролики на телефоне и параметры «человеческого» прогрева.
+[phone]
+adb_dir = "tools/platform-tools"   # куда распакован platform-tools (adb.exe); пусто — adb из PATH
+serial = ""                         # серийник устройства; пусто — единственное подключённое берётся само
+remote_dir = "/sdcard/Movies/ShortsFarm"   # сюда adb push кладёт ролики для публикации
+[phone.packages]
+tiktok = "com.zhiliaoapp.musically"
+youtube = "com.google.android.youtube"
+instagram = "com.instagram.android"
+
+# Прогрев аккаунта TikTok (phone.warmup): сессия выглядит как обычный просмотр ленты —
+# листаем, смотрим случайное время, изредка лайкаем. Параметры — диапазоны случайных значений.
+[phone.warmup]
+session_min_s = 600      # длина одной сессии прогрева (10 мин)
+session_max_s = 1800     # (30 мин)
+watch_min_s = 6          # сколько смотреть один ролик
+watch_max_s = 45
+like_probability = 0.15  # доля роликов, которые лайкаем (двойной тап)
+follow_probability = 0.0 # подписка — координатный тап, оставлен выключенным до настройки
+comment_probability = 0.0
+swipe_back_probability = 0.1   # иногда вернуться назад (свайп вниз)
+# Какие аккаунты прогревать и когда считать аккаунт прогретым (phone.accounts).
+platforms = ["tiktok", "youtube", "instagram"]
+sessions_to_warm = 3     # столько сессий — и статус warming → warmed
+seconds_to_warm = 1800   # либо столько суммарных секунд прогрева
+# Тематика прогрева: ищем и смотрим контент, похожий на то, что постит проект
+# (истории, переписки, нарезки) — так алгоритм быстрее подбирает нужную аудиторию.
+keywords = ["истории", "переписки", "нарезки", "истории из жизни", "жиза"]
+search_probability = 0.6  # доля сессий с поиском по ключевикам (остальные — просто лента)
 
 # Уведомления в Telegram: упавшие задачи, готовые ролики, сценарии на проверке, перезапуск обработчика.
 # Токен бота и чат — в .env (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID): venv\Scripts\python -m notify setup

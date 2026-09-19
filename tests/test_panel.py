@@ -21,8 +21,22 @@ def cfg(dev_cfg, tmp_path, monkeypatch):
     dev_cfg["paths"]["manifest"] = str(tmp_path / "out" / "manifest.json")
     dev_cfg["queue"]["db"] = str(tmp_path / "q.sqlite")
     dev_cfg["panel"]["password"] = None
+    # учётки, ключ подписи сессий и привязки площадок — во временной папке, а не в data/ репозитория
+    dev_cfg["paths"]["users"] = str(tmp_path / "users.json")
+    dev_cfg["paths"]["panel_secret"] = str(tmp_path / "panel-secret")
+    dev_cfg["paths"]["social_links"] = str(tmp_path / "social-links.json")
+    dev_cfg["paths"]["uploads"] = str(tmp_path / "out" / "uploads.json")
     monkeypatch.setattr(panel.app, "start_worker", lambda cfg: False)   # без реального фонового процесса
     return dev_cfg
+
+
+def panel_client(cfg, login="admin"):
+    """Клиент панели с выполненным входом: без сессии все /api отвечают 401."""
+    client = TestClient(panel.app.create_app(cfg))
+    password = cfg["panel"]["seed"][login]["password"]
+    resp = client.post("/api/login", json={"login": login, "password": password}, headers={"X-Panel": "1"})
+    assert resp.status_code == 200, resp.text
+    return client
 
 
 def make_scene(cfg, kind="reddit_story", status="pending", created="2026-09-14T10:00:00Z"):
@@ -121,7 +135,7 @@ def test_auto_approve_sends_script_to_work(cfg):
 
 
 def test_api_auto_approve_toggle(cfg):
-    client = TestClient(panel.app.create_app(cfg))
+    client = panel_client(cfg)
     summary = client.get("/api/summary").json()
     assert summary["auto_approve"] is False and summary["review_enabled"] is True
     assert client.put("/api/settings", json={"auto_approve": True}).status_code == 403            # без X-Panel
@@ -133,7 +147,7 @@ def test_api_auto_approve_toggle(cfg):
 
 
 def test_api_delete_scenes_in_bulk(cfg):
-    client = TestClient(panel.app.create_app(cfg))
+    client = panel_client(cfg)
     seen = [make_scene(cfg)["scene_id"] for _ in range(2)]
     fresh = make_scene(cfg)["scene_id"]                                      # появился после загрузки страницы
     rejected = [make_scene(cfg, status="rejected")["scene_id"] for _ in range(2)]
@@ -151,7 +165,7 @@ def test_api_delete_scenes_in_bulk(cfg):
 
 
 def test_api_delete_all_videos_only_listed(cfg):
-    client = TestClient(panel.app.create_app(cfg))
+    client = panel_client(cfg)
     videos = work_dir(cfg, {"scene_id": "x"}).parents[1] / "videos"
     videos.mkdir(parents=True)
     scenes = [make_scene(cfg, status="approved") for _ in range(3)]
@@ -167,7 +181,7 @@ def test_api_delete_all_videos_only_listed(cfg):
 
 def test_api_videos_show_time_after_approval(cfg):
     from datetime import datetime, timedelta, timezone
-    client = TestClient(panel.app.create_app(cfg))
+    client = panel_client(cfg)
     scene = make_scene(cfg, kind="imessage_drama", status="approved")
     sid = scene["scene_id"]
     approved_at = (datetime.now(timezone.utc) - timedelta(minutes=25)).isoformat(timespec="seconds")
@@ -197,7 +211,7 @@ def test_api_videos_show_time_after_approval(cfg):
 
 
 def test_api_delete_video(cfg):
-    client = TestClient(panel.app.create_app(cfg))
+    client = panel_client(cfg)
     scene = make_scene(cfg, status="approved")
     sid = scene["scene_id"]
     videos = work_dir(cfg, scene).parents[1] / "videos"
@@ -228,7 +242,7 @@ def test_api_delete_video(cfg):
 # --- API панели ---------------------------------------------------------------------
 
 def test_api_review_flow(cfg):
-    client = TestClient(panel.app.create_app(cfg))
+    client = panel_client(cfg)
     scene = make_scene(cfg, kind="imessage_drama")
     cards = client.get("/api/scenes?status=pending").json()
     assert cards[0]["contacts"]["A"] == "Лена" and cards[0]["words"] == 10 and cards[0]["est_s"] > 0
@@ -251,7 +265,7 @@ def test_api_review_flow(cfg):
 
 
 def test_api_generate_clamps_count(cfg):
-    client = TestClient(panel.app.create_app(cfg))
+    client = panel_client(cfg)
     r = client.post("/api/generate", json={"kind": "story", "count": 100, "topic": " соседи "},
                     headers={"X-Panel": "1"})
     queue = open_queue(cfg)
@@ -294,7 +308,7 @@ def wait_revised(client, scene_id):
 
 def test_revise_with_note_in_background(cfg, monkeypatch):
     import scripting
-    client = TestClient(panel.app.create_app(cfg))
+    client = panel_client(cfg)
     x = {"X-Panel": "1"}
     scene = make_scene(cfg, kind="imessage_drama")
     sid = scene["scene_id"]
@@ -328,7 +342,7 @@ def test_revise_with_note_in_background(cfg, monkeypatch):
 def test_revise_error_keeps_script(cfg, monkeypatch):
     import scripting
     from scripting import DeepSeekError
-    client = TestClient(panel.app.create_app(cfg))
+    client = panel_client(cfg)
     scene = make_scene(cfg)
     fake = SlowDeepSeek(error=DeepSeekError("Нет связи с DeepSeek 300 с"))
     fake.go.set()
@@ -342,7 +356,7 @@ def test_revise_error_keeps_script(cfg, monkeypatch):
 
 def test_videos_publish_texts_and_sequel(cfg):
     from pipeline.publish import save_publish
-    client = TestClient(panel.app.create_app(cfg))
+    client = panel_client(cfg)
     x = {"X-Panel": "1"}
     scene = make_scene(cfg, kind="imessage_drama", status="approved")
     sid = scene["scene_id"]
@@ -496,7 +510,7 @@ def test_telegram_bot(cfg, monkeypatch):
 
 def test_api_generate_loop(cfg):
     """Галочка «петля» у переписок: задачи сценариев с loop, у историй петли нет."""
-    client = TestClient(panel.app.create_app(cfg))
+    client = panel_client(cfg)
     x = {"X-Panel": "1"}
     r = client.post("/api/generate", json={"kind": "drama", "count": 2, "loop": True}, headers=x)
     queue = open_queue(cfg)
@@ -506,7 +520,7 @@ def test_api_generate_loop(cfg):
 
 
 def test_loop_card_and_video(cfg):
-    client = TestClient(panel.app.create_app(cfg))
+    client = panel_client(cfg)
     plain = make_scene(cfg, kind="imessage_drama", created="2026-09-15T09:00:00Z")
     scene = make_scene(cfg, kind="imessage_drama", created="2026-09-15T10:00:00Z")
     scene["meta"].update(loop=True, loop_idea="«О чём ты?» — и первое сообщение отвечает")
@@ -535,7 +549,7 @@ def test_watchdog_restarts_stopped_worker(cfg, monkeypatch):
     monkeypatch.setattr(panel.app, "worker_running", lambda cfg: True)
     assert panel.app.ensure_worker(cfg) == 0 and started == []                # уже работает
     monkeypatch.setattr(panel.app, "worker_running", lambda cfg: False)
-    with TestClient(panel.app.create_app(cfg)):                                # сторож стартует вместе с панелью
+    with panel_client(cfg):                                # сторож стартует вместе с панелью
         for _ in range(100):
             if sent:
                 break
@@ -544,7 +558,7 @@ def test_watchdog_restarts_stopped_worker(cfg, monkeypatch):
 
 
 def test_api_jobs_have_timestamps(cfg):
-    client = TestClient(panel.app.create_app(cfg))
+    client = panel_client(cfg)
     queue = open_queue(cfg)
     done_id, running_id, pending_id = (queue.enqueue("tts_synthesis", {}) for _ in range(3))
     queue.claim_next()
@@ -558,17 +572,56 @@ def test_api_jobs_have_timestamps(cfg):
 
 
 def test_api_password(cfg):
+    """Вход по HTTP Basic оставлен для скриптов; людям — логин с паролем учётки."""
     cfg["panel"]["password"] = "секрет-123"
-    client = TestClient(panel.app.create_app(cfg))
+    client = TestClient(panel.app.create_app(cfg))       # без входа
     auth = lambda u, p: {"Authorization": "Basic " + base64.b64encode(f"{u}:{p}".encode()).decode()}  # noqa: E731
     assert client.get("/api/summary").status_code == 401
     assert client.get("/api/summary", headers=auth("admin", "неверно")).status_code == 401
     assert client.get("/api/summary", headers=auth("admin", "секрет-123")).status_code == 200
-    assert client.get("/", headers=auth("admin", "секрет-123")).status_code == 200
+    assert client.get("/").status_code == 200             # страница входа отдаётся без пароля
+
+
+def test_login_required_and_session(cfg):
+    """Без входа API закрыт, вход выдаёт куку сессии, выход её забирает."""
+    client = TestClient(panel.app.create_app(cfg))
+    x = {"X-Panel": "1"}
+    assert client.get("/api/summary").status_code == 401
+    assert client.post("/api/login", json={"login": "admin", "password": "не тот"}, headers=x).status_code == 401
+    assert client.post("/api/login", json={"login": "admin", "password": "admin67"}, headers=x).status_code == 200
+    me = client.get("/api/me").json()
+    assert me["login"] == "admin" and me["role"] == "admin" and me["must_change_password"] is True
+    assert client.get("/api/summary").status_code == 200
+    assert client.post("/api/logout", headers=x).status_code == 200
+    assert client.get("/api/summary").status_code == 401
+
+
+def test_password_change_and_admin_only_users(cfg):
+    admin = panel_client(cfg)
+    x = {"X-Panel": "1"}
+    assert admin.post("/api/me/password", json={"password": "коротк"}, headers=x).status_code == 200
+    assert admin.post("/api/me/password", json={"password": "три"}, headers=x).status_code == 400   # короче 6
+    # заводским паролем больше не войти, новым — да
+    fresh = TestClient(panel.app.create_app(cfg))
+    assert fresh.post("/api/login", json={"login": "admin", "password": "admin67"}, headers=x).status_code == 401
+    assert fresh.post("/api/login", json={"login": "admin", "password": "коротк"}, headers=x).status_code == 200
+    assert fresh.get("/api/me").json()["must_change_password"] is False
+
+    assert len(admin.get("/api/users").json()) == 6                      # admin + user1..user5
+    assert admin.post("/api/users", json={"login": "user1", "password": "другой"}, headers=x).status_code == 400
+    assert admin.post("/api/users", json={"login": "vasya", "password": "парольвасi"}, headers=x).status_code == 200
+    assert admin.delete("/api/users/admin", headers=x).status_code == 400  # себя удалить нельзя
+    assert admin.delete("/api/users/vasya", headers=x).status_code == 200
+
+    user = panel_client(cfg, "user1")                                    # обычный пользователь — не админ
+    assert user.get("/api/users").status_code == 403
+    assert user.post("/api/users", json={"login": "x", "password": "парольxx"}, headers=x).status_code == 403
+    assert user.delete("/api/users/user2", headers=x).status_code == 403
+    assert user.get("/api/summary").status_code == 200                   # но панелью пользуется как все
 
 
 def test_media_only_from_videos_dir(cfg):
-    client = TestClient(panel.app.create_app(cfg))
+    client = panel_client(cfg)
     videos = work_dir(cfg, {"scene_id": "x"}).parents[1] / "videos"
     videos.mkdir(parents=True)
     (videos / "story_1.mp4").write_bytes(b"\x00" * 100)

@@ -193,6 +193,13 @@ def load_config(profile: str | None = None, hw: dict | None = None) -> dict:
     return cfg
 
 
+def public_url(cfg: dict) -> str:
+    """Адрес панели снаружи — на него площадки возвращают браузер после согласия (OAuth redirect).
+    Задаётся panel.public_url, иначе берётся адрес из уведомлений, иначе локальный."""
+    return (cfg["panel"].get("public_url") or cfg["notify"].get("panel_url")
+            or f"http://{cfg['panel']['host']}:{cfg['panel']['port']}")
+
+
 def probe_encoder(encoder: str, args: list[str] = ()) -> bool:
     """Реальная проверка энкодера: ffmpeg -encoders показывает и те, что на этом
     железе не заработают (например h264_nvenc на машине с AMD)."""

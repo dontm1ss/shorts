@@ -7,6 +7,18 @@
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+<!-- Вход. Пока не вошли, остальная страница скрыта: панель смотрит наружу через туннель. -->
+<section id="login" class="login" hidden>
+  <form id="login-form">
+    <h1>Shorts</h1>
+    <label>Логин<input name="login" autocomplete="username" required autofocus></label>
+    <label>Пароль<input name="password" type="password" autocomplete="current-password" required></label>
+    <button type="submit">Войти</button>
+    <div id="login-error" class="login-error" hidden></div>
+  </form>
+</section>
+
+<div id="app" hidden>
 <header class="top">
   <div class="brand">Shorts<span>отбор сценариев</span></div>
   <div class="worker">
@@ -14,6 +26,8 @@
        title="Откроет бота в Telegram — нажмите «Старт», и сценарии с роликами начнут приходить туда">Подключить Telegram</a>
     <span id="worker-state" class="dot"></span>
     <button id="worker-start" class="ghost" hidden>Запустить обработку</button>
+    <span id="who" class="who"></span>
+    <button id="logout" class="ghost">Выйти</button>
   </div>
 </header>
 
@@ -45,10 +59,13 @@
   <button data-tab="videos">Готовые <b id="n-videos"></b></button>
   <button data-tab="queue">Очередь <b id="n-queue"></b></button>
   <button data-tab="rejected">Отклонённые <b id="n-rejected"></b></button>
+  <button data-tab="accounts">Аккаунты</button>
+  <button data-tab="account">Кабинет</button>
 </nav>
 
 <main id="content"></main>
 <div id="toast" role="status" hidden></div>
+</div>
 <script src="/static/app.js"></script>
 </body>
 </html>

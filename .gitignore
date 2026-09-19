@@ -38,6 +38,9 @@ output/*
 models/
 .cache/
 
+# Тулинг телефона (platform-tools/scrcpy) — качается scripts/setup_phone.ps1
+tools/
+
 # Obsidian: локальное состояние окна и плагины (local-rest-api хранит ключи в data.json)
 shortsobs/.obsidian/workspace*.json
 shortsobs/.obsidian/plugins/
@@ -47,3 +50,9 @@ Thumbs.db
 .DS_Store
 .vscode/
 .idea/
+
+# Учётки панели, ключ подписи сессий и привязки площадок (пароли — хэшами, токены — секреты)
+data/users.json
+data/panel-secret
+data/social-links.json
+data/phone-accounts.json
